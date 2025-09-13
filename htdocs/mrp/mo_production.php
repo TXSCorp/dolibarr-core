@@ -1789,10 +1789,19 @@ if ($object->id > 0 && (empty($action) || ($action != 'edit' && $action != 'crea
 						if (getDolGlobalInt('PRODUCT_USE_UNITS')) {
 							print '<td></td>';
 						}
+						
+						// --- Begin Customization --- TXS Corp/Accellier: Fix the Unit Price not visible in Manufacturing Order
 						// Cost price
+						/*if ($permissiontoupdatecost) {
+								print '<td></td>';
+						}*/
 						if ($permissiontoupdatecost) {
-							print '<td></td>';
+							$stockmovement = new MouvementStock($db);
+							$stockmovement->fetch($line2['fk_stock_movement']);
+							print '<td>'.($stockmovement->price ? price2num($stockmovement->price) : 0).'</td>';
 						}
+						// --- End Customization ---
+
 						// Already produced
 						print '<td class="right">'.$line2['qty'].'</td>';
 						// Warehouse
