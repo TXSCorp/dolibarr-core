@@ -56,3 +56,6 @@ Dockerfile          export-ignore
 .settings           export-ignore
 .travis.yml         export-ignore
 .tx                 export-ignore
+
+# TXS Corp change log file
+TXS-CORE-CHANGES.md merge=ours
