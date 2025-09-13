@@ -1,0 +1,60 @@
+name: Apply TXS .gitattributes rules
+
+on:
+  # Triggers when you click "Sync fork", merge upstream, or push anything
+  push:
+    branches: [ "22.0", "main", "23.0", "*" ]
+  # Validates in PRs too (so forks/feature branches don’t regress)
+  pull_request:
+    branches: [ "22.0", "main", "23.0" ]
+  # Allow manual run
+  workflow_dispatch: {}
+
+permissions:
+  contents: write  # needed to push a commit
+
+jobs:
+  apply-rules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply TXS rules to .gitattributes (idempotent)
+        shell: bash
+        run: |
+          set -euo pipefail
+          TXS_FILE="TXS-gitattributes"
+          ATTR_FILE=".gitattributes"
+
+          # Ensure .gitattributes exists
+          touch "$ATTR_FILE"
+
+          # Ensure newline at end of .gitattributes (avoid concatenation issues)
+          tail -c1 "$ATTR_FILE" | od -An -t x1 | grep -q "0a" || echo "" >> "$ATTR_FILE"
+
+          # Append any missing TXS rules (skip blanks/comments)
+          while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            if ! grep -Fqx "$line" "$ATTR_FILE"; then
+              echo "$line" >> "$ATTR_FILE"
+              echo "Appended TXS rule: $line"
+            fi
+          done < "$TXS_FILE"
+
+      - name: Commit changes if any
+        id: commit
+        run: |
+          if ! git diff --quiet -- .gitattributes; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .gitattributes
+            git commit -m "chore: re-apply TXS .gitattributes rules"
+          fi
+
+      - name: Push (if commit created)
+        if: steps.commit.outcome == 'success'
+        run: |
+          git push
