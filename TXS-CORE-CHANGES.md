@@ -1,5 +1,7 @@
 # TXS Core Change Log
 
+![](https://docs.txscorp.com/img/TXS_Logo-Small.png)
+
 > **Purpose:**  
 > This document tracks all changes made by **TXS Corp** to the Dolibarr _core codebase_  
 > (`htdocs/` and other non-custom directories).
