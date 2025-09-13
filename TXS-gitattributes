@@ -1,0 +1,4 @@
+# --- BEGIN TXS MERGE RULES ---
+# Always keep our change log file during merges
+TXS-CORE-CHANGES.md merge=ours
+# --- END TXS MERGE RULES ---
