@@ -6,6 +6,15 @@
 [![GitHub release](https://img.shields.io/github/v/release/Dolibarr/dolibarr)](https://github.com/Dolibarr/dolibarr)
 [![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/5521/badge)](https://bestpractices.coreinfrastructure.org/projects/5521)
 
+![](https://docs.txscorp.com/img/TXS_Logo-Small.png)
+
+> ## 🔹 TXS Corp Customizations & Core Changes
+> **Important:** This repo contains TXS Corp specific customizations to Dolibarr.  
+> View all tracked core changes here:  
+> [TXS-CORE-CHANGES.md](./TXS-CORE-CHANGES.md)
+>
+> ---
+
 Dolibarr ERP & CRM is a modern software package that helps manage your organization's activities (contacts, quotes, invoices, orders, stocks, agenda, human resources, ecm, manufacturing…).
 
 It's an Open-Source Software suite (written in PHP with JavaScript enhancements) designed for small, medium or large companies, foundations and freelancers.
