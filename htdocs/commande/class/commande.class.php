@@ -1538,7 +1538,7 @@ class Commande extends CommonOrder
 	 *	@param      string			$desc            	Description of line
 	 *	@param      float			$pu_ht    	        Unit price (without tax)
 	 *	@param      float			$qty             	Quantite
-	 * 	@param    	float			$txtva           	Force Vat rate, -1 for auto (Can contain the vat_src_code too with syntax '9.9 (CODE)')
+	 * 	@param    	float|string	$txtva           	Force Vat rate, -1 for auto (Can contain the vat_src_code too with syntax '9.9 (CODE)')
 	 * 	@param		float			$txlocaltax1		Local tax 1 rate (deprecated, use instead txtva with code inside)
 	 * 	@param		float			$txlocaltax2		Local tax 2 rate (deprecated, use instead txtva with code inside)
 	 *	@param      int				$fk_product      	Id of product
@@ -1789,6 +1789,9 @@ class Commande extends CommonOrder
 			$this->line->total_localtax2 = (float) $total_localtax2;
 			$this->line->total_ttc = (float) $total_ttc;
 			$this->line->special_code = $special_code;
+			if (empty($qty) && empty($special_code)) {
+				$this->line->special_code = 3;
+			}
 			$this->line->origin = $origin;
 			$this->line->origin_id = $origin_id;
 			$this->line->fk_parent_line = $fk_parent_line;
@@ -3101,7 +3104,7 @@ class Commande extends CommonOrder
 	 *  @param    	float			$pu               	Unit price
 	 *  @param    	float			$qty              	Quantity
 	 *  @param    	float			$remise_percent   	Percent of discount
-	 *  @param    	float			$txtva           	Taux TVA
+	 *  @param    	float|string	$txtva	 			VAT Rate (Can be '8.5', '8.5 (ABC)')
 	 * 	@param		float			$txlocaltax1		Local tax 1 rate
 	 *  @param		float			$txlocaltax2		Local tax 2 rate
 	 *  @param    	string			$price_base_type	HT or TTC
@@ -3150,8 +3153,11 @@ class Commande extends CommonOrder
 			if (empty($remise_percent)) {
 				$remise_percent = 0;
 			}
-			if (empty($special_code) || $special_code == 3) {
-				$special_code = 0;
+			if (empty($qty) && empty($special_code)) {
+				$special_code = 3; // Set option tag
+			}
+			if (!empty($qty) && $special_code == 3) {
+				$special_code = 0; // Remove option tag
 			}
 			if (empty($ref_ext)) {
 				$ref_ext = '';
@@ -3698,8 +3704,7 @@ class Commande extends CommonOrder
 				$response->nbtodo++;
 				$response->total += $obj->total_ht;
 
-				$generic_commande->statut = $obj->fk_statut;
-				$generic_commande->date_commande = $this->db->jdate($obj->date_commande);
+				$generic_commande->status = $obj->fk_statut;
 				$generic_commande->date = $this->db->jdate($obj->date_commande);
 				$generic_commande->delivery_date = $this->db->jdate($obj->delivery_date);
 

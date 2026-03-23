@@ -155,7 +155,7 @@ $permissiontodelete = $user->hasRight('ticket', 'delete');
 $permissiontoeditextra = $permissiontoadd;
 if (GETPOST('attribute', 'aZ09') && isset($extrafields->attributes[$object->table_element]['perms'][GETPOST('attribute', 'aZ09')])) {
 	// For action 'update_extras', is there a specific permission set for the attribute to update
-	$permissiontoeditextra = dol_eval($extrafields->attributes[$object->table_element]['perms'][GETPOST('attribute', 'aZ09')]);
+	$permissiontoeditextra = dol_eval((string) $extrafields->attributes[$object->table_element]['perms'][GETPOST('attribute', 'aZ09')]);
 }
 
 $upload_dir = $conf->ticket->dir_output;
@@ -281,7 +281,7 @@ if (empty($reshook)) {
 				$object->origin_email = null;
 				$notifyTiers = GETPOST("notify_tiers_at_create", 'alpha');
 				$object->notify_tiers_at_create = empty($notifyTiers) ? 0 : 1;
-				$object->context['contact_id'] = GETPOSTINT('contact_id');
+				$object->context['contact_id'] = GETPOSTINT('contactid');
 				$id = $object->create($user);
 			} else {
 				$id = $object->update($user);
@@ -457,8 +457,11 @@ if (empty($reshook)) {
 
 	if (($action == "confirm_close" || $action == "confirm_abandon") && GETPOST('confirm', 'alpha') == 'yes' && $permissiontoadd) {
 		$object->fetch(GETPOSTINT('id'), '', GETPOST('track_id', 'alpha'));
+		if (GETPOSTISSET('contactid')) {
+			$object->context['contact_id'] = GETPOSTINT('contactid');
+		}
 
-		if ($object->close($user, ($action == "confirm_abandon" ? 1 : 0))) {
+		if ($object->close($user, ($action == "confirm_abandon" ? 1 : 0))) {	// Test on pemrission already done
 			setEventMessages($langs->trans('TicketMarkedAsClosed'), null, 'mesgs');
 
 			$url = 'card.php?track_id=' . GETPOST('track_id', 'alpha');
@@ -473,7 +476,7 @@ if (empty($reshook)) {
 	if ($action == "confirm_public_close" && GETPOST('confirm', 'alpha') == 'yes' && $permissiontoadd) {
 		$object->fetch(GETPOSTINT('id'), '', GETPOST('track_id', 'alpha'));
 		if ($_SESSION['email_customer'] == $object->origin_email || $_SESSION['email_customer'] == $object->thirdparty->email) {
-			$object->context['contact_id'] = GETPOSTINT('contact_id');
+			$object->context['contact_id'] = GETPOSTINT('contactid');
 
 			$object->close($user);
 
@@ -618,8 +621,9 @@ if (empty($reshook)) {
 		// Reopen ticket
 		if ($object->fetch(GETPOSTINT('id'), GETPOST('track_id', 'alpha')) >= 0) {
 			$new_status = GETPOSTINT('new_status');
-			//$old_status = $object->status;
-			$res = $object->setStatut($new_status);
+
+			$res = $object->setStatut($new_status, null, '', 'TICKET_MODIFY');
+
 			if ($res) {
 				$url = 'card.php?track_id=' . $object->track_id;
 				header("Location: " . $url);
@@ -771,7 +775,7 @@ if ($action == 'create' || $action == 'presend') {
 	$formticket->showForm(0, 'edit', 0, null, $action, $object);
 
 	print dol_get_fiche_end();
-} elseif (empty($action) || in_array($action, ['builddoc', 'view', 'addlink', 'addlinkbyref', 'dellink', 'presend', 'presend_addmessage', 'close', 'abandon', 'delete', 'editcustomer', 'progression', 'categories', 'reopen', 'edit_contrat', 'editsubject', 'edit_extras', 'update_extras', 'edit_extrafields', 'set_extrafields', 'classify', 'sel_contract', 'edit_message_init', 'set_status'])) {
+} elseif ($object->id) {
 	if (!empty($res) && $res > 0) {
 		// or for unauthorized internals users
 		if (!$user->socid && (getDolGlobalString('TICKET_LIMIT_VIEW_ASSIGNED_ONLY') && $object->fk_user_assign != $user->id) && !$user->hasRight('ticket', 'manage')) {

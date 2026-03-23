@@ -2431,11 +2431,11 @@ function addFileIntoDatabaseIndex($dir, $file, $fullpathorig = '', $mode = 'uplo
 /**
  *  Delete files into database index using search criteria.
  *
- *  @param      string	$dir			Directory name (full real path without ending /)
- *  @param		string	$file			File name
- *  @param		string	$mode			How file was created ('uploaded', 'generated', ...)
- *  @param		Object	$object			object used for entity
- *	@return		int						Return integer <0 if KO, 0 if nothing done, >0 if OK
+ *  @param      string			$dir			Directory name (full real path without ending /)
+ *  @param		string			$file			File name
+ *  @param		string			$mode			How file was created ('uploaded', 'generated', ...)
+ *  @param		?CommonObject	$object			object used for entity
+ *	@return		int								Return integer <0 if KO, 0 if nothing done, >0 if OK
  */
 function deleteFilesIntoDatabaseIndex($dir, $file, $mode = 'uploaded', $object = null)
 {
@@ -2909,7 +2909,7 @@ function dol_compress_dir($inputdir, $outputfile, $mode = "zip", $excludefiles =
 					$newmask = getDolGlobalString('MAIN_UMASK');
 				}
 				if (empty($newmask)) {	// This should no happen
-					dol_syslog("Warning: dol_copy called with empty value for newmask and no default value defined", LOG_WARNING);
+					dol_syslog("Warning: dol_compress_dir called with empty value for newmask and no default value defined", LOG_WARNING);
 					$newmask = '0664';
 				}
 
@@ -3478,6 +3478,7 @@ function dol_check_secure_access_document($modulepart, $original_file, $entity, 
 		if ($fuser->hasRight('fournisseur', 'facture', $lire) || preg_match('/^specimen/i', $original_file)) {
 			$accessallowed = 1;
 		}
+		$original_file = preg_replace("/payment\//", "", $original_file);	// Because the $conf->fournisseur->payment->dir_output already contains the "payment/"
 		$original_file = $conf->fournisseur->payment->dir_output.'/'.$original_file;
 		$sqlprotectagainstexternals = "SELECT fk_soc as fk_soc FROM ".MAIN_DB_PREFIX."paiementfournisseur WHERE ref='".$db->escape($refname)."' AND entity=".$conf->entity;
 	} elseif ($modulepart == 'payment') {

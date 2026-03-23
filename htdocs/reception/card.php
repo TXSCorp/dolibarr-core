@@ -181,7 +181,7 @@ if (isModEnabled("reception")) {
 $permissiontoeditextra = $permissiontoadd;
 if (GETPOST('attribute', 'aZ09') && isset($extrafields->attributes[$object->table_element]['perms'][GETPOST('attribute', 'aZ09')])) {
 	// For action 'update_extras', is there a specific permission set for the attribute to update
-	$permissiontoeditextra = dol_eval($extrafields->attributes[$object->table_element]['perms'][GETPOST('attribute', 'aZ09')]);
+	$permissiontoeditextra = dol_eval((string) $extrafields->attributes[$object->table_element]['perms'][GETPOST('attribute', 'aZ09')]);
 }
 
 $error = 0;
@@ -313,10 +313,10 @@ if (empty($reshook)) {
 		$object->origin = $origin;
 		$object->origin_id = $origin_id;
 		$object->fk_project = GETPOSTINT('projectid');
-		$object->weight = GETPOSTINT('weight') == '' ? null : GETPOSTINT('weight');
-		$object->trueHeight = GETPOSTINT('trueHeight') == '' ? null : GETPOSTINT('trueHeight');
-		$object->trueWidth = GETPOSTINT('trueWidth') == '' ? null : GETPOSTINT('trueWidth');
-		$object->trueDepth = GETPOSTINT('trueDepth') == '' ? null : GETPOSTINT('trueDepth');
+		$object->weight = GETPOST('weight') == '' ? null : GETPOSTINT('weight');
+		$object->trueHeight = GETPOST('trueHeight') == '' ? null : GETPOSTINT('trueHeight');
+		$object->trueWidth = GETPOST('trueWidth') == '' ? null : GETPOSTINT('trueWidth');
+		$object->trueDepth = GETPOST('trueDepth') == '' ? null : GETPOSTINT('trueDepth');
 		$object->size_units = GETPOSTINT('size_units');
 		$object->weight_units = GETPOSTINT('weight_units');
 
@@ -550,36 +550,31 @@ if (empty($reshook)) {
 		if ($result < 0) {
 			setEventMessages($object->error, $object->errors, 'errors');
 		}
-	} elseif (($action == 'settracking_number' || $action == 'settracking_url'
-	|| $action == 'settrueWeight'
-	|| $action == 'settrueWidth'
-	|| $action == 'settrueHeight'
-	|| $action == 'settrueDepth'
-		|| $action == 'setshipping_method_id') && $permissiontoadd) {
+	} elseif (in_array($action, array('settracking_number', 'settracking_url', 'settrueWeight', 'settrueWidth', 'settrueHeight', 'settrueDepth', 'setshipping_method_id')) && $permissiontoadd) {
 		// Action update
 		$error = 0;
 
-		if ($action == 'settracking_number') {	// Test on permission to add
+		if ($action == 'settracking_number') {		// Test on permission already done
 			$object->tracking_number = trim(GETPOST('tracking_number', 'alpha'));
 		}
-		if ($action == 'settracking_url') {		// Test on permission to add
+		if ($action == 'settracking_url') {			// Test on permission already done
 			$object->tracking_url = trim(GETPOST('tracking_url', 'restricthtml'));
 		}
-		if ($action == 'settrueWeight') {		// Test on permission to add
-			$object->trueWeight = GETPOSTINT('trueWeight');
+		if ($action == 'settrueWeight') {			// Test on permission already done
+			$object->trueWeight = GETPOST('trueWeight');
 			$object->weight_units = GETPOSTINT('weight_units');
 		}
-		if ($action == 'settrueWidth') {		// Test on permission to add
-			$object->trueWidth = GETPOSTINT('trueWidth');
+		if ($action == 'settrueWidth') {			// Test on permission already done
+			$object->trueWidth = GETPOST('trueWidth');
 		}
-		if ($action == 'settrueHeight') {		// Test on permission to add
-			$object->trueHeight = GETPOSTINT('trueHeight');
+		if ($action == 'settrueHeight') {			// Test on permission already done
+			$object->trueHeight = GETPOST('trueHeight');
 			$object->size_units = GETPOSTINT('size_units');
 		}
-		if ($action == 'settrueDepth') {		// Test on permission to add
-			$object->trueDepth = GETPOSTINT('trueDepth');
+		if ($action == 'settrueDepth') {			// Test on permission already done
+			$object->trueDepth = GETPOST('trueDepth');
 		}
-		if ($action == 'setshipping_method_id') {	// Test on permission to add
+		if ($action == 'setshipping_method_id') {	// Test on permission already done
 			$object->shipping_method_id = GETPOSTINT('shipping_method_id');
 		}
 
@@ -929,7 +924,7 @@ if ($action == 'create') {
 			// Weight
 			print '<tr><td>';
 			print $langs->trans("Weight");
-			print '</td><td colspan="3"><input name="weight" size="4" value="'.GETPOSTINT('weight').'"> ';
+			print '</td><td colspan="3"><input name="weight" size="4" value="'.GETPOST('weight').'"> ';
 			$text = $formproduct->selectMeasuringUnits("weight_units", "weight", (string) GETPOSTINT('weight_units'), 0, 2);
 			$htmltext = $langs->trans("KeepEmptyForAutoCalculation");
 			print $form->textwithpicto($text, $htmltext);
@@ -937,9 +932,9 @@ if ($action == 'create') {
 			// Dim
 			print '<tr><td>';
 			print $langs->trans("Width").' x '.$langs->trans("Height").' x '.$langs->trans("Depth");
-			print ' </td><td colspan="3"><input name="trueWidth" size="4" value="'.GETPOSTINT('trueWidth').'">';
-			print ' x <input name="trueHeight" size="4" value="'.GETPOSTINT('trueHeight').'">';
-			print ' x <input name="trueDepth" size="4" value="'.GETPOSTINT('trueDepth').'">';
+			print ' </td><td colspan="3"><input name="trueWidth" size="4" value="'.GETPOST('trueWidth').'">';
+			print ' x <input name="trueHeight" size="4" value="'.GETPOST('trueHeight').'">';
+			print ' x <input name="trueDepth" size="4" value="'.GETPOST('trueDepth').'">';
 			print ' ';
 			$text = $formproduct->selectMeasuringUnits("size_units", "size", (string) GETPOSTINT('size_units'), 0, 2);
 			$htmltext = $langs->trans("KeepEmptyForAutoCalculation");
@@ -1290,7 +1285,7 @@ if ($action == 'create') {
 
 					if (getDolGlobalString('STOCK_CALCULATE_ON_RECEPTION') || getDolGlobalString('STOCK_CALCULATE_ON_RECEPTION_CLOSE')) {
 						print '<td>';
-						print '<input class="width75 right" name="cost_price'.$indiceAsked.'" id="cost_price'.$indiceAsked.'" value="'.$cost_price.'">';
+						print '<input class="width75 right" name="cost_price'.$indiceAsked.'" id="cost_price'.$indiceAsked.'" value="'.price($cost_price).'">';
 						print '</td>';
 					}
 

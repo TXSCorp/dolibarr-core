@@ -215,6 +215,9 @@ if (empty($user->socid)) {
 	$fieldstosearchall["c.note_private"] = "NotePrivate";
 }
 
+// Show POS fields if cashdesk or takepos module enabled or if global configuration to show POS fields on order list is enabled
+$showpos = (isModEnabled('cashdesk') || isModEnabled('takepos') || getDolGlobalInt('ORDER_SHOW_POS')) ? '1' : '0';
+
 $checkedtypetiers = '0';
 $arrayfields = array(
 	'c.rowid' => array('label' => "ID", 'checked' => '1', 'enabled' => (string) getDolGlobalInt('MAIN_SHOW_TECHNICAL_ID'), 'position' => 1),
@@ -237,8 +240,8 @@ $arrayfields = array(
 	'c.fk_cond_reglement' => array('label' => "PaymentConditionsShort", 'checked' => '-1', 'position' => 67),
 	'c.fk_mode_reglement' => array('label' => "PaymentMode", 'checked' => '-1', 'position' => 68),
 	'c.fk_input_reason' => array('label' => "Origin", 'checked' => '-1', 'position' => 69),
-	'c.module_source' => array('label' => "POSModule", 'langfile' => 'cashdesk', 'checked' => ($contextpage == 'poslist' ? '1' : '0'), 'enabled' => "(isModEnabled('cashdesk') || isModEnabled('takepos') || getDolGlobalInt('ORDER_SHOW_POS'))", 'position' => 90),
-	'c.pos_source' => array('label' => "POSTerminal", 'langfile' => 'cashdesk', 'checked' => ($contextpage == 'poslist' ? '1' : '0'), 'enabled' => "(isModEnabled('cashdesk') || isModEnabled('takepos') || getDolGlobalInt('ORDER_SHOW_POS'))", 'position' => 91),
+	'c.module_source' => array('label' => "POSModule", 'langfile' => 'cashdesk', 'checked' => ($contextpage == 'poslist' ? '1' : '0'), 'enabled' => $showpos, 'position' => 90),
+	'c.pos_source' => array('label' => "POSTerminal", 'langfile' => 'cashdesk', 'checked' => ($contextpage == 'poslist' ? '1' : '0'), 'enabled' => $showpos, 'position' => 91),
 	'c.total_ht' => array('label' => "AmountHT", 'checked' => '1', 'position' => 75),
 	'c.total_vat' => array('label' => "AmountVAT", 'checked' => '0', 'position' => 80),
 	'c.total_ttc' => array('label' => "AmountTTC", 'checked' => '0', 'position' => 85),
@@ -453,7 +456,7 @@ if (empty($reshook)) {
 					$objecttmp->ref_client = $cmd->ref_client;
 				}
 
-				if (empty($objecttmp->note_public)) {
+				if (empty($objecttmp->note_public) && getDolGlobalInt("MAXREFONDOC", 10)>0) {
 					$objecttmp->note_public =  $langs->transnoentities("Orders");
 				}
 
@@ -606,6 +609,13 @@ if (empty($reshook)) {
 								$lines[$i]->fk_unit
 							);
 							if ($result > 0) {
+								if (!empty($lines[$i]->extraparams)) {
+									$factureLine = new FactureLigne($db);
+									$factureLine->id = $result;
+									$factureLine->extraparams = $lines[$i]->extraparams;
+									$factureLine->setExtraParameters();
+								}
+
 								$lineid = $result;
 							} else {
 								$lineid = 0;
@@ -808,7 +818,7 @@ if ($action == 'validate' && $permissiontoadd && $objectclass !== null) {
 					} else {
 						$idwarehouse = 0;
 					}
-					if ($objecttmp->valid($user, $idwarehouse)) {
+					if ($objecttmp->valid($user, $idwarehouse) > 0) {
 						setEventMessages($langs->trans('hasBeenValidated', $objecttmp->ref), null, 'mesgs');
 					} else {
 						setEventMessages($objecttmp->error, $objecttmp->errors, 'errors');
@@ -1140,7 +1150,7 @@ if ($search_pos_source) {
 	$sql .= natural_search("c.pos_source", $search_pos_source);
 }
 if ($search_import_key) {
-	$sql .= natural_search("s.import_key", $search_import_key);
+	$sql .= natural_search("c.import_key", $search_import_key);
 }
 // Search on user
 if ($search_user > 0) {
@@ -1819,7 +1829,7 @@ if (!empty($arrayfields['country.code_iso']['checked'])) {
 }
 // Company type
 if (!empty($arrayfields['typent.code']['checked'])) {
-	print '<td class="liste_titre maxwidthonsmartphone" align="center">';
+	print '<td class="liste_titre maxwidthonsmartphone center">';
 	print $form->selectarray("search_type_thirdparty", $formcompany->typent_array(0), $search_type_thirdparty, 1, 0, 0, '', 0, 0, 0, (!getDolGlobalString('SOCIETE_SORT_ON_TYPEENT') ? 'ASC' : $conf->global->SOCIETE_SORT_ON_TYPEENT), '', 1);
 	print '</td>';
 }
@@ -2560,7 +2570,7 @@ while ($i < $imaxinloop) {
 
 		// Country
 		if (!empty($arrayfields['country.code_iso']['checked'])) {
-			print '<td class="center">';
+			print '<td class="center tdoverflowmax100">';
 			$tmparray = getCountry($obj->fk_pays, 'all');
 			print $tmparray['label'];
 			print '</td>';
@@ -2574,9 +2584,12 @@ while ($i < $imaxinloop) {
 			if (!is_array($typenArray) || count($typenArray) == 0) {
 				$typenArray = $formcompany->typent_array(1);
 			}
-			print '<td class="center tdoverflowmax100" title="'.dolPrintHTMLForAttribute($typenArray[$obj->typent_code]).'">';
 			if (!empty($obj->typent_code)) {
+				print '<td class="center tdoverflowmax100" title="'.dolPrintHTMLForAttribute($typenArray[$obj->typent_code]).'">';
 				print $typenArray[$obj->typent_code];
+			} else {
+				print '<td class="center tdoverflowmax100">';
+				print '';
 			}
 			print '</td>';
 			if (!$i) {

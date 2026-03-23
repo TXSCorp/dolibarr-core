@@ -348,13 +348,14 @@ class pdf_espadon extends ModelePdfExpedition
 				if (!empty($notetoshow) || !empty($object->tracking_number)) {
 					$tab_top -= 2;
 					$tab_topbeforetrackingnumber = $tab_top;
+					$height_trackingnumber = 0;
 
 					// Tracking number
 					if (!empty($object->tracking_number)) {
-						$height_trackingnumber = 4;
+						$tracking_block_start_y = $tab_top;
 
 						$pdf->SetFont('', 'B', $default_font_size - 2);
-						$pdf->writeHTMLCell(60, $height_trackingnumber, $this->posxdesc - 1, $tab_top - 1, $outputlangs->transnoentities("TrackingNumber") . " : " . $object->tracking_number, 0, 1, false, true, 'L');
+						$pdf->writeHTMLCell(60, 4, $this->posxdesc - 1, $tab_top - 1, $outputlangs->transnoentities("TrackingNumber") . " : " . $object->tracking_number, 0, 1, false, true, 'L');
 						$tab_top_alt = $pdf->GetY();
 
 						$object->getUrlTrackingStatus($object->tracking_number);
@@ -373,12 +374,15 @@ class pdf_espadon extends ModelePdfExpedition
 									$label .= $object->tracking_url;
 								}
 
-								$height_trackingnumber += 4;
 								$pdf->SetFont('', 'B', $default_font_size - 2);
-								$pdf->writeHTMLCell(60, $height_trackingnumber, $this->posxdesc - 1, $tab_top_alt, $label, 0, 1, false, true, 'L');
+								$pdf->writeHTMLCell(60, 4, $this->posxdesc - 1, $tab_top_alt, $label, 0, 1, false, true, 'L');
 							}
 						}
 						$tab_top = $pdf->GetY();
+						$height_trackingnumber = $tab_top - $tracking_block_start_y;
+						if ($height_trackingnumber < 4) {
+							$height_trackingnumber = 4;
+						}
 					}
 
 					// Notes
@@ -635,23 +639,7 @@ class pdf_espadon extends ModelePdfExpedition
 					if ($this->getColumnStatus('desc')) {
 						if ($object->lines[$i]->special_code == SUBTOTALS_SPECIAL_CODE) {
 							$bg_color = colorStringToArray(getDolGlobalString("SUBTOTAL_BACK_COLOR_LEVEL_".abs($object->lines[$i]->qty)));
-							$pdf->SetFillColor($bg_color[0], $bg_color[1], $bg_color[2]);
-							$pdf->SetXY($pdf->GetX() + 1, $curY);
-							$pdf->MultiCell($this->page_largeur - $this->marge_droite  - $this->marge_gauche - 2, 6, '', 0, '', true);
-							$previous_align = array();
-							$previous_align['align'] = $this->cols['desc']['content']['align'];
-							if ($object->lines[$i]->qty < 0) {
-								$langs->load("subtotals");
-								$object->lines[$i]->desc = $langs->trans("SubtotalOf", $object->lines[$i]->desc);
-								if ($previous_align['align'] == 'L') {
-									$this->cols['desc']['content']['align'] = 'R';
-								} elseif ($previous_align['align'] == 'R') {
-									$this->cols['desc']['content']['align'] = 'L';
-								}
-							}
-							$this->printColDescContent($pdf, $curY, 'desc', $object, $i, $outputlangs, $hideref, $hidedesc);
-							$this->setAfterColsLinePositionsData('desc', $pdf->GetY(), $pdf->getPage());
-							$this->cols['desc']['content']['align'] = $previous_align['align']; // Re align if we printed a subtotal ligne
+							pdf_render_subtotals($pdf, $this, $curY, $object, $i, $outputlangs, $hideref, $hidedesc, $bg_color, true, true);
 						} else {
 							$pdf->startTransaction();
 
@@ -750,6 +738,11 @@ class pdf_espadon extends ModelePdfExpedition
 
 					if ($this->getColumnStatus('subprice') && $object->lines[$i]->special_code != SUBTOTALS_SPECIAL_CODE) {
 						$this->printStdColumnContent($pdf, $curY, 'subprice', price($object->lines[$i]->subprice, 0, $outputlangs));
+						$nexY = max($pdf->GetY(), $nexY);
+					}
+
+					if ($this->getColumnStatus('totalexcltax') && $object->lines[$i]->special_code != SUBTOTALS_SPECIAL_CODE) {
+						$this->printStdColumnContent($pdf, $curY, 'totalexcltax', price($object->lines[$i]->total_ht, 0, $outputlangs));
 						$nexY = max($pdf->GetY(), $nexY);
 					}
 
@@ -967,8 +960,8 @@ class pdf_espadon extends ModelePdfExpedition
 			$this->printStdColumnContent($pdf, $tab2_top, 'qty_shipped', $totalToShip);
 		}
 
-		if ($this->getColumnStatus('subprice')) {
-			$this->printStdColumnContent($pdf, $tab2_top, 'subprice', price($object->total_ht, 0, $outputlangs));
+		if ($this->getColumnStatus('totalexcltax')) {
+			$this->printStdColumnContent($pdf, $tab2_top, 'totalexcltax', price($object->total_ht, 0, $outputlangs));
 		}
 
 		$pdf->SetTextColor(0, 0, 0);
