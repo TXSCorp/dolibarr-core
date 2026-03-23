@@ -1,5 +1,7 @@
 # TXS Corp — Dolibarr Core Fork
 
+![](https://docs.txscorp.com/img/TXS_Logo-Small.png)
+
 **Dolibarr Version:** 22.0.2  
 **Maintained by:** TXS Corp Infrastructure  
 **Repository:** https://github.com/TXSCorp/dolibarr-core
