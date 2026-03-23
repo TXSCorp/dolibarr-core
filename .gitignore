@@ -1,0 +1,22 @@
+# Sensitive configuration — never commit
+htdocs/conf/conf.php
+
+# User data and documents (EFS-mounted, not code)
+documents/
+
+# Custom modules — tracked in separate repo: TXSCorp/dolibarr-custom
+htdocs/custom/
+
+# Dolibarr temp/cache
+htdocs/includes/restler/framework/Luracast/Restler/Cache/
+*.cache
+
+# Logs
+*.log
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.github/
