@@ -51,6 +51,7 @@ Each change entry **must include**:
 | 22.0.x           | 0                 |               | Initial v22 integration                                               |
 | 22.0.2           | 1                 | TXS-CORE-001  | Display missing unit cost in Manufacturing Order consumed items table |
 | 22.0.2           | 3                 | TXS-CORE-002  | Product list performance - remove heavy GROUP BY and supplier price JOIN |
+| 22.0.2           | 1                 | TXS-CORE-003  | Top menu Products link points to list page instead of index page |
 
 
 ---
@@ -251,6 +252,47 @@ $sql .= $hookmanager->resPrint;*/
 - The `bestpurchaseprice` column will display as empty. If supplier pricing visibility on the list page is needed in the future, revert Change 1 and Change 2.
 - When upgrading Dolibarr, check whether `htdocs/product/list.php` upstream changes affect the `GROUP BY`, the `LEFT JOIN` on `product_fournisseur_price`, or the `bestpurchaseprice` select.
 - If upstream optimises these queries in a future release, these customisations may no longer be necessary.
+
+---
+
+
+---
+### [2026-03-23] TXS-CORE-003 - Top Menu Products Link to List Page
+**Developer:** TXS Corp
+**Dolibarr Version:** 22.0.x  
+**Change Type:** Enhancement
+
+**Files Affected:**
+- `htdocs/core/menus/standard/eldy.lib.php`
+
+**Description:**
+Changed the top-menu "Products" link from the product index page (`/product/index.php`) to the product list page (`/product/list.php`) so users land directly on the searchable product list.
+
+**Reason / Business Case:**
+> The default index page provides a summary/dashboard that is less useful for day-to-day operations.  
+> Pointing the top menu entry straight to the list page reduces clicks and improves workflow efficiency.
+
+##### **Code Changes**
+
+**Before Code (Upstream):**
+*File:* `htdocs/core/menus/standard/eldy.lib.php`  
+*Line:* 166
+```php
+'link' => '/product/index.php?mainmenu=products&amp;leftmenu=',
+```
+
+**After Code (TXS Customization):**
+*File:* `htdocs/core/menus/standard/eldy.lib.php`  
+*Lines:* 166-168
+```php
+// --- Begin Customization --- TXS Corp: Changed top menu entry to point to product list page	
+'link' => '/product/list.php?mainmenu=products&amp;leftmenu=',
+// --- End Customization ---
+```
+
+**Upgrade Notes:**
+- If upstream changes the Products menu entry structure in `eldy.lib.php`, re-apply this single-line link change.
+- No functional risk — only the landing page URL differs.
 
 ---
 
