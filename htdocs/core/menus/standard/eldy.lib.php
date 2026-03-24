@@ -163,7 +163,9 @@ function print_eldy_menu($db, $atarget, $type_user, &$tabMenu, &$menu, $noout = 
 	);
 	$menu_arr[] = array(
 		'name' => 'Products',
-		'link' => '/product/index.php?mainmenu=products&amp;leftmenu=',
+		// --- Begin Customization --- TXS Corp: Changed top menu entry to point to product list page	
+		'link' => '/product/list.php?mainmenu=products&amp;leftmenu=',
+		// --- End Customization ---
 		'title' => (isModEnabled('product') && isModEnabled('service'))
 		? (array("TMenuProducts", " | ", "TMenuServices"))
 		: (isModEnabled('product') ? "TMenuProducts" : "TMenuServices"),
