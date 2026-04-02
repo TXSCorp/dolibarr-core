@@ -53,6 +53,9 @@ Each change entry **must include**:
 | 22.0.2           | 3                 | TXS-CORE-002  | Product list performance - remove heavy GROUP BY and supplier price JOIN |
 | 22.0.2           | 1                 | TXS-CORE-003  | Top menu Products link points to list page instead of index page |
 | 22.0.2           | 1                 | TXS-CORE-004  | Fix missing space before INNER JOIN in productlot SQL query |
+| 22.0.2           | 1                 | TXS-CORE-005  | Remove stale `fk_user_done` column reference in Future Actions box |
+| 22.0.2           | 11                | TXS-CORE-006  | Move INNER JOIN `societe_commerciaux` before WHERE in 11 product stats methods |
+| 22.0.2           | 1                 | TXS-CORE-007  | Add duplicate-link check in `add_object_linked()` |
 
 
 ---
@@ -331,6 +334,174 @@ $sql .= " INNER JOIN ".$this->db->prefix()."societe_commerciaux as sc ON sc.fk_s
 
 **Upgrade Notes:**
 - Trivial one-character fix. If upstream corrects this in a future release, this change can be dropped.
+
+---
+
+
+---
+### [2026-03-23] TXS-CORE-005 - Remove Stale `fk_user_done` Column Reference
+**Developer:** TXS Corp
+**Dolibarr Version:** 22.0.x  
+**Change Type:** Bugfix
+
+**Files Affected:**
+- `htdocs/core/boxes/box_actions_future.php`
+
+**Description:**
+Removed the reference to the non-existent `fk_user_done` column in the "Future Actions" dashboard box SQL query. The column was renamed to `fk_user_action` in the Dolibarr v3.6 migration, but this file still referenced the old name, causing SQL errors for non-admin users without `agenda > allactions > read` permission.
+
+**Reason / Business Case:**
+> The "Future Actions" dashboard box produced SQL errors for restricted users because the query referenced a column (`fk_user_done`) that no longer exists in the `llx_actioncomm` table. This broke the dashboard for any user without full agenda read permissions.
+
+##### **Code Changes**
+
+**Before Code (Upstream):**
+*File:* `htdocs/core/boxes/box_actions_future.php`  
+*Line:* 110
+```php
+$sql .= " AND (a.fk_user_author = ".((int) $user->id)." OR a.fk_user_action = ".((int) $user->id)." OR a.fk_user_done = ".((int) $user->id).")";
+```
+
+**After Code (TXS Customization):**
+*File:* `htdocs/core/boxes/box_actions_future.php`  
+*Line:* 110
+```php
+// --- Begin Customization --- TXS Corp: Remove stale fk_user_done column reference (renamed to fk_user_action in v3.6)
+$sql .= " AND (a.fk_user_author = ".((int) $user->id)." OR a.fk_user_action = ".((int) $user->id).")";
+// --- End Customization ---
+```
+
+**Upgrade Notes:**
+- If upstream removes this stale reference in a future release, this change can be dropped.
+- No functional change — `fk_user_action` was already present in the OR clause and covers the same data.
+
+---
+
+
+---
+### [2026-03-23] TXS-CORE-006 - Fix INNER JOIN After WHERE in Product Stats Methods
+**Developer:** TXS Corp
+**Dolibarr Version:** 22.0.x  
+**Change Type:** Bugfix
+
+**Files Affected:**
+- `htdocs/product/class/product.class.php`
+
+**Description:**
+Moved the conditional `INNER JOIN societe_commerciaux` clause from **after** the `WHERE` keyword to **before** it in 11 `load_stats_*` methods. The original code produced invalid SQL (`... WHERE x = y INNER JOIN ...`) for internal users without the `societe > client > voir` permission, breaking all product statistics pages for sales-rep-restricted users.
+
+**Reason / Business Case:**
+> Internal users restricted to their own companies (without `societe > client > voir`) could not view product statistics. The SQL was syntactically invalid because `INNER JOIN` appeared after `WHERE` conditions had already been emitted, causing database errors on the product card Statistics tab.
+
+##### **Code Changes**
+
+**Affected methods (11 total):**
+1. `load_stats_propale()` — fk_soc alias: `p`
+2. `load_stats_proposal_supplier()` — fk_soc alias: `p`
+3. `load_stats_commande()` — fk_soc alias: `c`
+4. `load_stats_commande_fournisseur()` — fk_soc alias: `c`
+5. `load_stats_sending()` — fk_soc alias: `e`
+6. `load_stats_reception()` — fk_soc alias: `cf`
+7. `load_stats_inproduction()` — fk_soc alias: `m`
+8. `load_stats_contrat()` — fk_soc alias: `c`
+9. `load_stats_facture()` — fk_soc alias: `f`
+10. `load_stats_facturerec()` — fk_soc alias: `f`
+11. `load_stats_facture_fournisseur()` — fk_soc alias: `f`
+
+**Before Code pattern (Upstream) — example from `load_stats_commande()`:**
+*File:* `htdocs/product/class/product.class.php`
+```php
+$sql .= ", ".$this->db->prefix()."societe as s";
+$sql .= " WHERE c.rowid = cd.fk_commande";
+$sql .= " AND c.fk_soc = s.rowid";
+$sql .= " AND c.entity IN (".getEntity('commande').")";
+$sql .= " AND cd.fk_product = ".((int) $this->id);
+if (empty($user->fk_soc) && !$user->hasRight('societe', 'client', 'voir') && !$forVirtualStock) {
+    $sql .= " INNER JOIN ".$this->db->prefix()."societe_commerciaux as sc ON sc.fk_soc = c.fk_soc AND sc.fk_user = ".((int) $user->id);
+}
+```
+
+**After Code pattern (TXS Customization):**
+*File:* `htdocs/product/class/product.class.php`
+```php
+$sql .= ", ".$this->db->prefix()."societe as s";
+// --- Begin Customization --- TXS Corp: Move INNER JOIN before WHERE clause
+if (empty($user->fk_soc) && !$user->hasRight('societe', 'client', 'voir') && !$forVirtualStock) {
+    $sql .= " INNER JOIN ".$this->db->prefix()."societe_commerciaux as sc ON sc.fk_soc = c.fk_soc AND sc.fk_user = ".((int) $user->id);
+}
+// --- End Customization ---
+$sql .= " WHERE c.rowid = cd.fk_commande";
+$sql .= " AND c.fk_soc = s.rowid";
+$sql .= " AND c.entity IN (".getEntity('commande').")";
+$sql .= " AND cd.fk_product = ".((int) $this->id);
+```
+
+**Upgrade Notes:**
+- The same fix pattern was applied to all 11 methods listed above.
+- `load_stats_mo()` was already correct upstream and was not modified.
+- If upstream fixes this in a future release, verify all 11 methods before removing the customization markers.
+- Search for `// --- Begin Customization --- TXS Corp: Move INNER JOIN before WHERE clause` to locate all patched sites.
+
+---
+
+
+---
+### [2026-03-23] TXS-CORE-007 - Add Duplicate Link Check in `add_object_linked()`
+**Developer:** TXS Corp
+**Dolibarr Version:** 22.0.x  
+**Change Type:** Bugfix
+
+**Files Affected:**
+- `htdocs/core/class/commonobject.class.php`
+
+**Description:**
+Added a `SELECT COUNT(*)` check before the `INSERT INTO llx_element_element` in `add_object_linked()` to detect and gracefully handle duplicate links. If the link already exists, the method returns `1` (success) immediately instead of attempting the INSERT, which would fail against the existing UNIQUE index and be misreported as an error.
+
+**Reason / Business Case:**
+> Repeated calls to `add_object_linked()` (from triggers, hooks, or retries) would hit the UNIQUE constraint on `llx_element_element` and return `0` (error), confusing callers into thinking the operation failed. The code-level check returns success when the link already exists, avoiding spurious error logs and rollback overhead.
+
+##### **Code Changes**
+
+**Before Code (Upstream):**
+*File:* `htdocs/core/class/commonobject.class.php`  
+*Line:* ~4292 (before INSERT)
+```php
+$this->db->begin();
+$error = 0;
+
+$sql = "INSERT INTO " . $this->db->prefix() . "element_element (";
+```
+
+**After Code (TXS Customization):**
+*File:* `htdocs/core/class/commonobject.class.php`  
+*Line:* ~4292
+```php
+// --- Begin Customization --- TXS Corp: Check for duplicate link before INSERT
+$sqlCheck = "SELECT COUNT(*) as cnt FROM ".$this->db->prefix()."element_element";
+$sqlCheck .= " WHERE fk_source = ".((int) $origin_id);
+$sqlCheck .= " AND sourcetype = '".$this->db->escape($origin)."'";
+$sqlCheck .= " AND fk_target = ".((int) $this->id);
+$sqlCheck .= " AND targettype = '".$this->db->escape($targettype)."'";
+$resCheck = $this->db->query($sqlCheck);
+if ($resCheck) {
+    $objCheck = $this->db->fetch_object($resCheck);
+    if ($objCheck->cnt > 0) {
+        dol_syslog(get_class($this)."::add_object_linked link already exists", LOG_DEBUG);
+        return 1;
+    }
+}
+// --- End Customization ---
+
+$this->db->begin();
+$error = 0;
+
+$sql = "INSERT INTO " . $this->db->prefix() . "element_element (";
+```
+
+**Upgrade Notes:**
+- The UNIQUE index `idx_element_element_idx1` on `(fk_source, sourcetype, fk_target, targettype)` already exists in `llx_element_element.key.sql` — no schema changes needed.
+- If upstream adds its own duplicate-check logic, this customization can be removed.
+- The SELECT-before-INSERT pattern has a theoretical TOCTOU race condition, but the existing UNIQUE index acts as a safety net for the rare case.
 
 ---
 
