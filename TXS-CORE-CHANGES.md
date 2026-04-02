@@ -52,6 +52,7 @@ Each change entry **must include**:
 | 22.0.2           | 1                 | TXS-CORE-001  | Display missing unit cost in Manufacturing Order consumed items table |
 | 22.0.2           | 3                 | TXS-CORE-002  | Product list performance - remove heavy GROUP BY and supplier price JOIN |
 | 22.0.2           | 1                 | TXS-CORE-003  | Top menu Products link points to list page instead of index page |
+| 22.0.2           | 1                 | TXS-CORE-004  | Fix missing space before INNER JOIN in productlot SQL query |
 
 
 ---
@@ -293,6 +294,43 @@ Changed the top-menu "Products" link from the product index page (`/product/inde
 **Upgrade Notes:**
 - If upstream changes the Products menu entry structure in `eldy.lib.php`, re-apply this single-line link change.
 - No functional risk — only the landing page URL differs.
+
+---
+
+
+---
+### [2026-03-23] TXS-CORE-004 - Fix Missing Space Before INNER JOIN in Product Lot Query
+**Developer:** TXS Corp
+**Dolibarr Version:** 22.0.x  
+**Change Type:** Bugfix
+
+**Files Affected:**
+- `htdocs/product/stock/class/productlot.class.php`
+
+**Description:**
+Added a missing leading space before `INNER JOIN` in the SQL query that joins `societe_commerciaux` for sales-rep-restricted users. Without the space the previous SQL fragment and `INNER JOIN` would concatenate without a separator, producing an invalid query.
+
+**Reason / Business Case:**
+> The missing space caused a malformed SQL statement for users without the `societe->client->voir` permission, potentially breaking product lot lookups tied to manufacturing orders.
+
+##### **Code Changes**
+
+**Before Code (Upstream):**
+*File:* `htdocs/product/stock/class/productlot.class.php`  
+*Line:* 1087
+```php
+$sql .= "INNER JOIN ".$this->db->prefix()."societe_commerciaux as sc ON sc.fk_soc=c.fk_soc AND sc.fk_user = ".((int) $user->id);
+```
+
+**After Code (TXS Customization):**
+*File:* `htdocs/product/stock/class/productlot.class.php`  
+*Line:* 1087
+```php
+$sql .= " INNER JOIN ".$this->db->prefix()."societe_commerciaux as sc ON sc.fk_soc=c.fk_soc AND sc.fk_user = ".((int) $user->id);
+```
+
+**Upgrade Notes:**
+- Trivial one-character fix. If upstream corrects this in a future release, this change can be dropped.
 
 ---
 
