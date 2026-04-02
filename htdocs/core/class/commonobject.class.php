@@ -4289,6 +4289,22 @@ abstract class CommonObject
 			}
 		}
 
+		// --- Begin Customization --- TXS Corp: Check for duplicate link before INSERT
+		$sqlCheck = "SELECT COUNT(*) as cnt FROM ".$this->db->prefix()."element_element";
+		$sqlCheck .= " WHERE fk_source = ".((int) $origin_id);
+		$sqlCheck .= " AND sourcetype = '".$this->db->escape($origin)."'";
+		$sqlCheck .= " AND fk_target = ".((int) $this->id);
+		$sqlCheck .= " AND targettype = '".$this->db->escape($targettype)."'";
+		$resCheck = $this->db->query($sqlCheck);
+		if ($resCheck) {
+			$objCheck = $this->db->fetch_object($resCheck);
+			if ($objCheck->cnt > 0) {
+				dol_syslog(get_class($this)."::add_object_linked link already exists", LOG_DEBUG);
+				return 1;
+			}
+		}
+		// --- End Customization ---
+
 		$this->db->begin();
 		$error = 0;
 
