@@ -1085,7 +1085,9 @@ if ($object->id > 0) {
 			if (!empty($orders2invoice) && $orders2invoice > 0) {
 				if ($object->status == 1) {
 					// Company is open
-					print dolGetButtonAction('', $langs->trans('CreateInvoiceForThisSupplier'), 'default', DOL_URL_ROOT.'/fourn/commande/list.php?socid='.$object->id.'&amp;search_billed=0&amp;autoselectall=1', '');
+					// --- Begin Customization --- TXS Corp: Fix parameter name from search_billed to billed (Dolibarr #35434)
+					print dolGetButtonAction('', $langs->trans('CreateInvoiceForThisSupplier'), 'default', DOL_URL_ROOT.'/fourn/commande/list.php?socid='.$object->id.'&amp;billed=0&amp;autoselectall=1', '');
+					// --- End Customization ---
 				} else {
 					print dolGetButtonAction('', $langs->trans('CreateInvoiceForThisCustomer'), 'default', $_SERVER['PHP_SELF'].'#', '', false);
 				}

@@ -56,6 +56,7 @@ Each change entry **must include**:
 | 22.0.2           | 1                 | TXS-CORE-005  | Remove stale `fk_user_done` column reference in Future Actions box |
 | 22.0.2           | 11                | TXS-CORE-006  | Move INNER JOIN `societe_commerciaux` before WHERE in 11 product stats methods |
 | 22.0.2           | 1                 | TXS-CORE-007  | Add duplicate-link check in `add_object_linked()` |
+| 22.0.2           | 2                 | TXS-CORE-008  | Fix broken "Billed" filter on supplier order list (Dolibarr #35434) |
 
 
 ---
@@ -508,6 +509,71 @@ $sql = "INSERT INTO " . $this->db->prefix() . "element_element (";
 
 
 ---
+
+
+---
+### [2026-04-03] TXS-CORE-008 - Fix Broken "Billed" Filter on Supplier Order List
+**Developer:** TXS Corp
+**Dolibarr Version:** 22.0.x  
+**Change Type:** Bugfix
+
+**Files Affected:**
+- `htdocs/fourn/commande/list.php`
+- `htdocs/fourn/card.php`
+
+**Description:**
+Fixed the "Billed" (Invoiced) filter dropdown on the supplier order list page, which was broken due to `GETPOSTINT` casting the parameter to integer. This made it impossible to distinguish "parameter absent" from "No" selected — both became `int(0)`. On PHP 8, this caused `AND cf.billed = 0` to be injected on every page load, silently defaulting to showing only unbilled orders. Also fixed the "Create Invoice for This Supplier" button on the supplier card, which sent `search_billed=0` instead of the correct parameter name `billed`.
+
+**Reason / Business Case:**
+> The supplier order list always filtered to unbilled orders on initial load (PHP 8), and the "Billed = No" dropdown appeared pre-selected. The "Create Invoice for This Supplier" button's pre-filter to unbilled orders never worked because it used the wrong parameter name. This is a confirmed upstream bug: [Dolibarr #35434](https://github.com/Dolibarr/dolibarr/issues/35434) (filed September 2025, still open with no upstream fix merged).
+
+##### **Code Changes**
+
+**Change 1 — Use `GETPOST` instead of `GETPOSTINT` for billed parameter**
+
+**Before Code (Upstream):**
+*File:* `htdocs/fourn/commande/list.php`  
+*Line:* 137
+```php
+$billed = GETPOSTINT('billed');
+```
+
+**After Code (TXS Customization):**
+*File:* `htdocs/fourn/commande/list.php`  
+*Line:* 137
+```php
+// --- Begin Customization --- TXS Corp: Fix Billed filter – use GETPOST to preserve '' vs '0' distinction (Dolibarr #35434)
+$billed = GETPOST('billed', 'int');
+// --- End Customization ---
+```
+
+---
+
+**Change 2 — Fix parameter name in "Create Invoice for This Supplier" button**
+
+**Before Code (Upstream):**
+*File:* `htdocs/fourn/card.php`  
+*Line:* 1088
+```php
+print dolGetButtonAction('', $langs->trans('CreateInvoiceForThisSupplier'), 'default', DOL_URL_ROOT.'/fourn/commande/list.php?socid='.$object->id.'&amp;search_billed=0&amp;autoselectall=1', '');
+```
+
+**After Code (TXS Customization):**
+*File:* `htdocs/fourn/card.php`  
+*Line:* 1088
+```php
+// --- Begin Customization --- TXS Corp: Fix parameter name from search_billed to billed (Dolibarr #35434)
+print dolGetButtonAction('', $langs->trans('CreateInvoiceForThisSupplier'), 'default', DOL_URL_ROOT.'/fourn/commande/list.php?socid='.$object->id.'&amp;billed=0&amp;autoselectall=1', '');
+// --- End Customization ---
+```
+
+**Upgrade Notes:**
+- If upstream merges a fix for [#35434](https://github.com/Dolibarr/dolibarr/issues/35434), compare their approach before carrying this forward.
+- Search for `// --- Begin Customization --- TXS Corp: Fix Billed filter` and `// --- Begin Customization --- TXS Corp: Fix parameter name from search_billed` to locate the patched sites.
+- No variable renames, SQL logic changes, or `selectyesno` form changes were made — the fix is minimal and self-contained.
+
+---
+
 
 
 ## Notes
