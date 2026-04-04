@@ -134,7 +134,9 @@ $search_multicurrency_montant_ht = GETPOST('search_multicurrency_montant_ht', 'a
 $search_multicurrency_montant_tva = GETPOST('search_multicurrency_montant_tva', 'alpha');
 $search_multicurrency_montant_ttc = GETPOST('search_multicurrency_montant_ttc', 'alpha');
 $optioncss = GETPOST('optioncss', 'alpha');
-$billed = GETPOSTINT('billed');
+// --- Begin Customization --- TXS Corp: Fix Billed filter – use GETPOST to preserve '' vs '0' distinction (Dolibarr #35434)
+$billed = GETPOST('billed', 'int');
+// --- End Customization ---
 $search_project_ref = GETPOST('search_project_ref', 'alpha');
 $search_btn = GETPOST('button_search', 'alpha');
 $search_remove_btn = GETPOST('button_removefilter', 'alpha');
