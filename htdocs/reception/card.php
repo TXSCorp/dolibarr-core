@@ -699,6 +699,13 @@ if (empty($reshook)) {
 					$line->qty = GETPOSTFLOAT($qty, 'MS');
 					$line->comment = GETPOST($comment, 'alpha');
 
+					// --- Begin Customization --- TXS Corp: Prevent negative qty in PO reception (Dolibarr #36489)
+					if ($line->qty < 0) {
+						setEventMessages('Quantity cannot be negative', null, 'errors');
+						$error++;
+					}
+					// --- End Customization ---
+
 					if (isModEnabled('productbatch')) {
 						$batch = "batch".$line_id;
 						$dlc = "dlc".$line_id;
@@ -714,7 +721,7 @@ if (empty($reshook)) {
 						$line->sellby = strtotime($sellbydate);
 					}
 
-					if ($line->update($user) < 0) {
+					if (!$error && $line->update($user) < 0) {
 						setEventMessages($line->error, $line->errors, 'errors');
 						$error++;
 					}
@@ -723,7 +730,13 @@ if (empty($reshook)) {
 					$line->id = $line_id;
 					$line->qty = GETPOSTFLOAT($qty, 'MS');
 					$line->fk_entrepot = 0;
-					if ($line->update($user) < 0) {
+					// --- Begin Customization --- TXS Corp: Prevent negative qty in PO reception (Dolibarr #36489)
+					if ($line->qty < 0) {
+						setEventMessages('Quantity cannot be negative', null, 'errors');
+						$error++;
+					}
+					// --- End Customization ---
+					if (!$error && $line->update($user) < 0) {
 						setEventMessages($line->error, $line->errors, 'errors');
 						$error++;
 					}
@@ -1277,7 +1290,9 @@ if ($action == 'create') {
 							$defaultqty = GETPOSTINT('qtyl'.$indiceAsked);
 						}
 						print '<input name="idl'.$indiceAsked.'" type="hidden" value="'.$line->id.'">';
-						print '<input class="right" name="qtyl'.$indiceAsked.'" id="qtyl'.$indiceAsked.'" type="text" size="4" value="'.$deliverableQty.'">';
+						// --- Begin Customization --- TXS Corp: Prevent negative qty in PO reception (Dolibarr #36489)
+						print '<input class="right" name="qtyl'.$indiceAsked.'" id="qtyl'.$indiceAsked.'" type="number" min="0" step="any" size="4" value="'.$deliverableQty.'">';
+						// --- End Customization ---
 					} else {
 						print $langs->trans("NA");
 					}
@@ -2011,7 +2026,9 @@ if ($action == 'create') {
 					print '<!-- case edit 1 -->';
 					print '<tr>';
 					// Qty to receive or received
-					print '<td><input name="qtyl'.$line_id.'" id="qtyl'.$line_id.'" type="text" size="4" value="'.$lines[$i]->qty.'"></td>';
+					// --- Begin Customization --- TXS Corp: Prevent negative qty in PO reception (Dolibarr #36489)
+					print '<td><input name="qtyl'.$line_id.'" id="qtyl'.$line_id.'" type="number" min="0" step="any" size="4" value="'.$lines[$i]->qty.'"></td>';
+					// --- End Customization ---
 					// Warehouse source
 					print '<td>'.$formproduct->selectWarehouses($lines[$i]->fk_entrepot, 'entl'.$line_id, '', 1, 0, $lines[$i]->fk_product, '', 1).'</td>';
 					// Batch number management
@@ -2032,7 +2049,9 @@ if ($action == 'create') {
 					print '<!-- case edit 2 -->';
 					print '<tr>';
 					// Qty to receive or received
-					print '<td><input name="qtyl'.$line_id.'" id="qtyl'.$line_id.'" type="text" size="4" value="'.$lines[$i]->qty.'"></td>';
+					// --- Begin Customization --- TXS Corp: Prevent negative qty in PO reception (Dolibarr #36489)
+					print '<td><input name="qtyl'.$line_id.'" id="qtyl'.$line_id.'" type="number" min="0" step="any" size="4" value="'.$lines[$i]->qty.'"></td>';
+					// --- End Customization ---
 					// Warehouse source
 					print '<td></td>';
 					// Batch number management

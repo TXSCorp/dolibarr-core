@@ -57,6 +57,7 @@ Each change entry **must include**:
 | 22.0.2           | 11                | TXS-CORE-006  | Move INNER JOIN `societe_commerciaux` before WHERE in 11 product stats methods |
 | 22.0.2           | 1                 | TXS-CORE-007  | Add duplicate-link check in `add_object_linked()` |
 | 22.0.2           | 2                 | TXS-CORE-008  | Fix broken "Billed" filter on supplier order list (Dolibarr #35434) |
+| 22.0.2           | 2                 | TXS-CORE-009  | Prevent negative qty in PO receptions (Dolibarr #36489) |
 
 
 ---
@@ -571,6 +572,119 @@ print dolGetButtonAction('', $langs->trans('CreateInvoiceForThisSupplier'), 'def
 - If upstream merges a fix for [#35434](https://github.com/Dolibarr/dolibarr/issues/35434), compare their approach before carrying this forward.
 - Search for `// --- Begin Customization --- TXS Corp: Fix Billed filter` and `// --- Begin Customization --- TXS Corp: Fix parameter name from search_billed` to locate the patched sites.
 - No variable renames, SQL logic changes, or `selectyesno` form changes were made — the fix is minimal and self-contained.
+
+---
+
+
+
+---
+### [2026-04-04] TXS-CORE-009 - Prevent Negative Qty in PO Receptions
+**Developer:** TXS Corp
+**Dolibarr Version:** 22.0.x  
+**Change Type:** Bugfix
+
+**Files Affected:**
+- `htdocs/fourn/commande/dispatch.php`
+- `htdocs/reception/card.php`
+
+**Description:**
+Prevented users from entering negative quantities when receiving against a Purchase Order. Added `min="0"` to all reception qty input fields (dispatch form, create-reception form, and edit-reception-line form) and added server-side validation in the `updateline` handler to reject negative quantities.
+
+**Reason / Business Case:**
+> Users could enter negative quantities in PO receptions, which caused the Receipts tab on the PO card to hang. Negative reception quantities are not a valid business operation. This is a known upstream bug: [Dolibarr #36489](https://github.com/Dolibarr/dolibarr/issues/36489).
+
+##### **Code Changes**
+
+**Change 1 — Add `min="0"` to dispatch form qty input**
+
+**Before Code (Upstream):**
+*File:* `htdocs/fourn/commande/dispatch.php`  
+*Line:* 1018
+```php
+print '<input id="qty'.$suffix.'" name="qty'.$suffix.'" type="number" step="any" class="width50 right qtydispatchinput" value="...';
+```
+
+**After Code (TXS Customization):**
+*File:* `htdocs/fourn/commande/dispatch.php`  
+*Line:* 1018
+```php
+// --- Begin Customization --- TXS Corp: Prevent negative qty in PO reception (Dolibarr #36489)
+print '<input id="qty'.$suffix.'" name="qty'.$suffix.'" type="number" min="0" step="any" class="width50 right qtydispatchinput" value="...';
+// --- End Customization ---
+```
+
+---
+
+**Change 2 — Change create-reception form qty input to `type="number" min="0"`**
+
+**Before Code (Upstream):**
+*File:* `htdocs/reception/card.php`  
+*Line:* 1280
+```php
+print '<input class="right" name="qtyl'.$indiceAsked.'" id="qtyl'.$indiceAsked.'" type="text" size="4" value="'.$deliverableQty.'">';
+```
+
+**After Code (TXS Customization):**
+*File:* `htdocs/reception/card.php`  
+*Line:* 1280
+```php
+// --- Begin Customization --- TXS Corp: Prevent negative qty in PO reception (Dolibarr #36489)
+print '<input class="right" name="qtyl'.$indiceAsked.'" id="qtyl'.$indiceAsked.'" type="number" min="0" step="any" size="4" value="'.$deliverableQty.'">';
+// --- End Customization ---
+```
+
+---
+
+**Change 3 — Change edit-reception-line qty inputs to `type="number" min="0"`**
+
+**Before Code (Upstream):**
+*File:* `htdocs/reception/card.php`  
+*Lines:* 2014 and 2035 (case edit 1 and case edit 2)
+```php
+print '<td><input name="qtyl'.$line_id.'" id="qtyl'.$line_id.'" type="text" size="4" value="'.$lines[$i]->qty.'"></td>';
+```
+
+**After Code (TXS Customization):**
+*File:* `htdocs/reception/card.php`  
+*Lines:* 2014 and 2035
+```php
+// --- Begin Customization --- TXS Corp: Prevent negative qty in PO reception (Dolibarr #36489)
+print '<td><input name="qtyl'.$line_id.'" id="qtyl'.$line_id.'" type="number" min="0" step="any" size="4" value="'.$lines[$i]->qty.'"></td>';
+// --- End Customization ---
+```
+
+---
+
+**Change 4 — Add server-side negative qty rejection in `updateline` handler**
+
+**Before Code (Upstream):**
+*File:* `htdocs/reception/card.php`  
+*Lines:* 699 and 724 (predefined and non-predefined product paths)
+```php
+$line->qty = GETPOSTFLOAT($qty, 'MS');
+// ... (no validation) ...
+if ($line->update($user) < 0) {
+```
+
+**After Code (TXS Customization):**
+*File:* `htdocs/reception/card.php`  
+*Lines:* 699 and 731
+```php
+$line->qty = GETPOSTFLOAT($qty, 'MS');
+// --- Begin Customization --- TXS Corp: Prevent negative qty in PO reception (Dolibarr #36489)
+if ($line->qty < 0) {
+    setEventMessages('Quantity cannot be negative', null, 'errors');
+    $error++;
+}
+// --- End Customization ---
+if (!$error && $line->update($user) < 0) {
+```
+
+**Upgrade Notes:**
+- If upstream merges a fix for [#36489](https://github.com/Dolibarr/dolibarr/issues/36489), compare their approach before carrying this forward.
+- Search for `// --- Begin Customization --- TXS Corp: Prevent negative qty in PO reception` to locate all patched sites (5 total: 1 in dispatch.php, 4 in reception/card.php).
+- The `type="text"` to `type="number"` change adds browser spinner arrows to qty fields. This is cosmetic and does not affect functionality.
+- The `step="any"` attribute ensures decimal quantities remain supported.
 
 ---
 
