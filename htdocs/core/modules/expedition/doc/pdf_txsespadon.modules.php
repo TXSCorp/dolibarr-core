@@ -338,6 +338,88 @@ class pdf_txsespadon extends ModelePdfExpedition
 					}
 				}
 
+				// Tracking refs from custom Tracking module (llx_tracking via llx_trackingorders, shipment = 3)
+				$tracking_refs_from_tracking_module = array();
+				if (!empty($object->id) && isModEnabled('tracking')) {
+					$sql = "SELECT t.ref FROM ".MAIN_DB_PREFIX."trackingorders AS tro";
+					$sql .= " INNER JOIN ".MAIN_DB_PREFIX."tracking AS t ON t.rowid = tro.fk_tracking";
+					$sql .= " WHERE tro.order_type = 3 AND tro.fk_order = ".((int) $object->id);
+					$sql .= " ORDER BY tro.rowid ASC";
+					$resql = $this->db->query($sql);
+					if ($resql) {
+						while ($obj = $this->db->fetch_object($resql)) {
+							if (!empty($obj->ref)) {
+								$tracking_refs_from_tracking_module[] = $obj->ref;
+							}
+						}
+						$this->db->free($resql);
+					}
+				}
+
+				$all_tracking_keys = array();
+				if (!empty($object->tracking_number)) {
+					foreach (preg_split('/[,\r\n]+/', (string) $object->tracking_number) as $p) {
+						$p = trim($p);
+						if ($p !== '') {
+							$all_tracking_keys[$p] = $p;
+						}
+					}
+				}
+				foreach ($tracking_refs_from_tracking_module as $ref) {
+					$ref = trim((string) $ref);
+					if ($ref !== '') {
+						$all_tracking_keys[$ref] = $ref;
+					}
+				}
+				$tracking_number_combined = implode(', ', $all_tracking_keys);
+
+				// Ship billing for PDF body (order extrafield, else third party — same as TXS Shipping)
+				$ship_billing_pdf_caption = '';
+				$ship_billing_pdf_value = '';
+				if ($object->origin === 'commande' && !empty($object->origin_id) && file_exists(DOL_DOCUMENT_ROOT.'/custom/txsshipping/lib/txsshipping.lib.php')) {
+					require_once DOL_DOCUMENT_ROOT.'/custom/txsshipping/lib/txsshipping.lib.php';
+					require_once DOL_DOCUMENT_ROOT.'/commande/class/commande.class.php';
+					require_once DOL_DOCUMENT_ROOT.'/core/class/extrafields.class.php';
+					$cmd_pdf = new Commande($this->db);
+					if ($cmd_pdf->fetch((int) $object->origin_id) > 0) {
+						$cmd_pdf->fetch_optionals();
+						$ship_billing_raw = txsshipping_resolve_ship_billing_raw($this->db, $cmd_pdf, $object->thirdparty);
+						if ($ship_billing_raw !== '') {
+							$outputlangs->load('txsshipping@txsshipping');
+							$ship_billing_key = (string) $ship_billing_raw;
+							if (strpos($ship_billing_key, ',') !== false) {
+								$parts_sb = explode(',', $ship_billing_key, 2);
+								$ship_billing_key = trim($parts_sb[0]);
+							}
+							$ef_sb = new ExtraFields($this->db);
+							$ef_sb->fetch_name_optionals_label('commande');
+							$ship_billing_label = '';
+							$opts_sb = (isset($ef_sb->attributes['commande']['param']['ship_billing']['options']) && is_array($ef_sb->attributes['commande']['param']['ship_billing']['options']))
+								? $ef_sb->attributes['commande']['param']['ship_billing']['options'] : null;
+							if (is_array($opts_sb)) {
+								if (!empty($opts_sb[$ship_billing_key])) {
+									$ship_billing_label = (string) $opts_sb[$ship_billing_key];
+								} elseif (!empty($opts_sb[(int) $ship_billing_key])) {
+									$ship_billing_label = (string) $opts_sb[(int) $ship_billing_key];
+								}
+							}
+							if ($ship_billing_label === '') {
+								$ship_billing_defaults = array('1' => 'TXS Billed', '2' => 'Third Party', '3' => 'Recipient', '4' => 'Customer');
+								$ship_billing_label = $ship_billing_defaults[$ship_billing_key] ?? $ship_billing_raw;
+							}
+							$ship_billing_pdf_value = $ship_billing_label;
+							$ship_billing_pdf_caption = $outputlangs->transnoentities('TXSSHIPPING_PDF_ShipBilling');
+							if (!empty($ef_sb->attributes['commande']['label']['ship_billing'])) {
+								$lbl_sb = $ef_sb->attributes['commande']['label']['ship_billing'];
+								if (is_string($lbl_sb) && $lbl_sb !== '') {
+									$ship_billing_pdf_caption = $lbl_sb;
+								}
+							}
+						}
+					}
+				}
+				$has_ship_billing_pdf = ($ship_billing_pdf_value !== '');
+
 				// Displays notes. Here we are still on code executed only for the first page.
 				$notetoshow = empty($object->note_public) ? '' : $object->note_public;
 
@@ -347,21 +429,64 @@ class pdf_txsespadon extends ModelePdfExpedition
 					$notetoshow = dol_concatdesc($notetoshow, $extranote);
 				}
 
-				if (!empty($notetoshow) || !empty($object->tracking_number)) {
+				if (!empty($notetoshow) || $tracking_number_combined !== '' || $has_ship_billing_pdf) {
 					$tab_top -= 2;
 					$tab_topbeforetrackingnumber = $tab_top;
+					$height_trackingnumber = 0;
+					$printed_tracking_line = false;
 
-					// Tracking number
-					if (!empty($object->tracking_number)) {
-						$height_trackingnumber = 4;
+					// Sending method + tracking (no standalone "Tracking number" line)
+					if ($tracking_number_combined !== '') {
+						$height_trackingnumber = 0;
 						$tracking_width = $this->page_largeur - $this->marge_gauche - $this->marge_droite;
-						$tracking_number_formatted = preg_replace('/<br\s*\/?>/i', ', ', (string) $object->tracking_number);
+
+						// Box-level service (EasyPost carrier — service), from txsshipping ship_boxes
+						$box_ship_services_pdf = '';
+						if (!empty($object->id) && isModEnabled('txsshipping')) {
+							$sqlbx = "SELECT ship_service FROM ".MAIN_DB_PREFIX."ship_boxes";
+							$sqlbx .= " WHERE expedition_id = ".((int) $object->id)." ORDER BY rowid ASC";
+							$resqlbx = $this->db->query($sqlbx);
+							if ($resqlbx) {
+								$svc_seen = array();
+								while ($obx = $this->db->fetch_object($resqlbx)) {
+									if (!empty($obx->ship_service)) {
+										$s = trim((string) $obx->ship_service);
+										if ($s !== '' && empty($svc_seen[$s])) {
+											$svc_seen[$s] = true;
+										}
+									}
+								}
+								$this->db->free($resqlbx);
+								if (count($svc_seen) > 0) {
+									$box_ship_services_pdf = implode(' | ', array_keys($svc_seen));
+								}
+							}
+						}
+
+						// No box ship_service: use sales order ship_service (code), else third party; label from Shipping Services dictionary
+						if ($box_ship_services_pdf === '' && file_exists(DOL_DOCUMENT_ROOT.'/custom/txsshipping/lib/txsshipping.lib.php')) {
+							require_once DOL_DOCUMENT_ROOT.'/custom/txsshipping/lib/txsshipping.lib.php';
+							if ($object->origin === 'commande' && !empty($object->origin_id)
+								&& function_exists('txsshipping_resolve_ship_service_code') && function_exists('txsshipping_get_ship_service_label')) {
+								require_once DOL_DOCUMENT_ROOT.'/commande/class/commande.class.php';
+								$cmd_svc_pdf = new Commande($this->db);
+								if ($cmd_svc_pdf->fetch((int) $object->origin_id) > 0) {
+									$cmd_svc_pdf->fetch_optionals();
+									$svc_code_pdf = txsshipping_resolve_ship_service_code($this->db, $cmd_svc_pdf, $object->thirdparty);
+									if ($svc_code_pdf !== '') {
+										$box_ship_services_pdf = (string) txsshipping_get_ship_service_label($this->db, $svc_code_pdf);
+									}
+								}
+							}
+						}
+
+						$tracking_number_formatted = preg_replace('/<br\s*\/?>/i', ', ', (string) $tracking_number_combined);
 						$tracking_number_formatted = preg_replace('/[\r\n]+/', ', ', $tracking_number_formatted);
 						$tracking_number_formatted = dol_string_nohtmltag($tracking_number_formatted);
 						$tracking_number_formatted = preg_replace('/\s*,\s*/', ', ', $tracking_number_formatted);
 						$tracking_number_formatted = trim(preg_replace('/\s{2,}/', ' ', $tracking_number_formatted));
-						$tracking_numbers = preg_split('/[,\r\n]+/', (string) $object->tracking_number);
-						$tracking_numbers = array_values(array_filter(array_map('trim', $tracking_numbers), 'strlen'));
+						$tracking_numbers = array_values($all_tracking_keys);
+						$tracking_numbers = array_values(array_filter($tracking_numbers, 'strlen'));
 						$tracking_urls = array();
 						$tracking_url_original = $object->tracking_url ?? '';
 						foreach ($tracking_numbers as $tracking_number_item) {
@@ -370,45 +495,79 @@ class pdf_txsespadon extends ModelePdfExpedition
 						}
 						$object->tracking_url = $tracking_url_original;
 
-						$pdf->SetFont('', 'B', $default_font_size - 2);
-						$pdf->writeHTMLCell($tracking_width, $height_trackingnumber, $this->posxdesc - 1, $tab_top - 1, $outputlangs->transnoentities("TrackingNumber") . " : " . $tracking_number_formatted, 0, 1, false, true, 'L');
-						$tab_top_alt = $pdf->GetY();
+						$y_tracking_block = $tab_top - 1;
 
-						if (!empty($tracking_urls)) {
-							if ($object->shipping_method_id > 0) {
-								$tracking_url_list = implode(', ', $tracking_urls);
-								$has_tracking_links = false;
-								foreach ($tracking_urls as $tracking_url_item) {
-									if (stripos($tracking_url_item, '<a ') !== false) {
-										$has_tracking_links = true;
-										break;
-									}
+						if ($object->shipping_method_id > 0) {
+							$tracking_url_list = implode(', ', $tracking_urls);
+							$has_tracking_links = false;
+							foreach ($tracking_urls as $tracking_url_item) {
+								if (stripos($tracking_url_item, '<a ') !== false) {
+									$has_tracking_links = true;
+									break;
 								}
-
-								// Get code using getLabelFromKey
-								$code = $outputlangs->getLabelFromKey($this->db, (string) $object->shipping_method_id, 'c_shipment_mode', 'rowid', 'code');
-								$label = '';
-								if ($has_tracking_links) {
-									$label .= $outputlangs->trans("LinkToTrackYourPackage")."<br>";
-								}
-								$label .= $outputlangs->trans("SendingMethod").": ".$outputlangs->trans("SendingMethod".strtoupper($code));
-								//var_dump($object->tracking_url != $object->tracking_number);exit;
-								if ($has_tracking_links) {
-									$label .= " : ";
-									$label .= $tracking_url_list;
-								}
-
-								$height_trackingnumber += 4;
-								$pdf->SetFont('', 'B', $default_font_size - 2);
-								$pdf->writeHTMLCell($tracking_width, $height_trackingnumber, $this->posxdesc - 1, $tab_top_alt, $label, 0, 1, false, true, 'L');
 							}
+
+							$code = $outputlangs->getLabelFromKey($this->db, (string) $object->shipping_method_id, 'c_shipment_mode', 'rowid', 'code');
+							$carrier_label = $outputlangs->trans("SendingMethod".strtoupper($code));
+							$label = $outputlangs->trans("SendingMethod").": ".$carrier_label;
+							// Omit redundant carrier prefix from box/order service (e.g. avoid "FedEx — FedEx - FEDEX_GROUND")
+							$box_svc_for_pdf = $box_ship_services_pdf;
+							if ($box_svc_for_pdf !== '' && $carrier_label !== '') {
+								$rest = trim($box_svc_for_pdf);
+								$cl = trim($carrier_label);
+								$clen = dol_strlen($cl);
+								if ($clen > 0 && dol_strlen($rest) >= $clen && strcasecmp(dol_substr($rest, 0, $clen), $cl) === 0) {
+									$rest = trim(dol_substr($rest, $clen));
+									$rest = preg_replace('/^[-–—\s]+/u', '', $rest);
+									$box_svc_for_pdf = $rest;
+								}
+							}
+							if ($box_svc_for_pdf !== '') {
+								$label .= ' — '.dol_escape_htmltag($box_svc_for_pdf, 0, 0, '', true);
+							}
+							if ($has_tracking_links && $tracking_url_list !== '') {
+								$label .= " : ";
+								$label .= $tracking_url_list;
+							} elseif ($tracking_number_formatted !== '') {
+								$label .= " : ";
+								$label .= dol_escape_htmltag($tracking_number_formatted, 0, 0, '', true);
+							}
+
+							$pdf->SetFont('', 'B', $default_font_size - 2);
+							$pdf->writeHTMLCell($tracking_width, 4, $this->posxdesc - 1, $y_tracking_block, $label, 0, 1, false, true, 'L');
+							$printed_tracking_line = true;
+						} elseif ($tracking_number_formatted !== '') {
+							$plain_track = dol_escape_htmltag($tracking_number_formatted, 0, 0, '', true);
+							$label_plain = ($box_ship_services_pdf !== '' ? dol_escape_htmltag($box_ship_services_pdf, 0, 0, '', true).' — ' : '').$plain_track;
+							$pdf->SetFont('', 'B', $default_font_size - 2);
+							$pdf->writeHTMLCell($tracking_width, 4, $this->posxdesc - 1, $y_tracking_block, $label_plain, 0, 1, false, true, 'L');
+							$printed_tracking_line = true;
+						}
+
+						if ($printed_tracking_line) {
+							$height_trackingnumber = max(4, $pdf->GetY() - $y_tracking_block);
+							$tab_top = $pdf->GetY();
+						}
+					}
+
+					if ($has_ship_billing_pdf) {
+						$tracking_width_sb = $this->page_largeur - $this->marge_gauche - $this->marge_droite;
+						$y_sb = $printed_tracking_line ? $pdf->GetY() : ($tab_top - 1);
+						$pdf->SetFont('', 'B', $default_font_size - 2);
+						$sb_line = dol_escape_htmltag($ship_billing_pdf_caption, 0, 0, '', true).' : '.dol_escape_htmltag($ship_billing_pdf_value, 0, 0, '', true);
+						$pdf->writeHTMLCell($tracking_width_sb, 4, $this->posxdesc - 1, $y_sb, $sb_line, 0, 1, false, true, 'L');
+						$h_sb = $pdf->GetY() - $y_sb;
+						if ($height_trackingnumber > 0) {
+							$height_trackingnumber += $h_sb;
+						} else {
+							$height_trackingnumber = max(4, $h_sb);
 						}
 						$tab_top = $pdf->GetY();
 					}
 
 					// Notes
 					$pagenb = $pdf->getPage();
-					if (!empty($notetoshow) || !empty($object->tracking_number)) {
+					if (!empty($notetoshow) || $tracking_number_combined !== '' || $has_ship_billing_pdf) {
 						$tab_top -= 1;
 
 						$tab_width = $this->page_largeur - $this->marge_gauche - $this->marge_droite;
