@@ -31,6 +31,31 @@
  * \brief Page to dispatch receiving
  */
 
+/* =====================================================================================
+ * TXS CORP CORE OVERRIDE - DO NOT EDIT IN PLACE WITHOUT UPDATING txsreception/docs/CORE_OVERRIDES.md
+ * -------------------------------------------------------------------------------------
+ * This is a modified copy of the core Dolibarr file fourn/commande/dispatch.php.
+ * It is staged under htdocs/custom/ and deployed by hand to htdocs/fourn/commande/dispatch.php.
+ *
+ * Divergence from stock core (Dolibarr v22):
+ *   Receiving grid (warehouse selects, both the main grid and the inline edit form):
+ *     - selectWarehouses() is called with showfullpath=0 so the "R2 >> ..." parent-warehouse
+ *       prefix is dropped, and with a fixed maxwidth class so the dropdowns normalize in width
+ *       and reclaim horizontal space.
+ *   Receiving grid (manual serial/batch entry guard, product_batch POST loop):
+ *     - Before dispatchProduct(), a serial/batch already present in product_lot against a DIFFERENT
+ *       product is rejected with a clean error. product_lot.batch is globally unique, so reusing
+ *       such a value would make core Productlot::create() collide and abort the reception.
+ *   "Receiving for same order" list (function block near the bottom of the page):
+ *     - The same Reception was re-fetched once per dispatched row. Reception::fetch() also loads
+ *       every line of that reception, so on a reception with N units this list was O(N^2) and
+ *       timed out for large receipts. The Reception is now cached per fk_reception and reused.
+ *     - The lot for each batch is resolved by batch alone (globally unique) and cached, so the row
+ *       shows the VARIANT the lot was reclassified to and a populated BCN, instead of the parent
+ *       product with a blank batch cell.
+ *   No other behavior is changed. Search this file for "TXS CORE OVERRIDE" to find each edit.
+ * ===================================================================================== */
+
 // Load Dolibarr environment
 require '../../main.inc.php';
 require_once DOL_DOCUMENT_ROOT.'/core/modules/supplier_order/modules_commandefournisseur.php';
@@ -41,6 +66,8 @@ require_once DOL_DOCUMENT_ROOT.'/fourn/class/fournisseur.commande.dispatch.class
 require_once DOL_DOCUMENT_ROOT.'/product/class/html.formproduct.class.php';
 require_once DOL_DOCUMENT_ROOT.'/product/stock/class/mouvementstock.class.php';
 require_once DOL_DOCUMENT_ROOT.'/product/stock/class/productlot.class.php';
+// TXS CORE OVERRIDE: shared helpers for variant resolution and duplicate-BCN detection.
+dol_include_once('/txsreception/class/txsreceptiondispatch.class.php');
 
 if (isModEnabled('project')) {
 	require_once DOL_DOCUMENT_ROOT.'/projet/class/project.class.php';
@@ -365,6 +392,19 @@ if ($action == 'dispatch' && $permissiontoreceive) {
 					$error++;
 				}
 
+				// TXS CORE OVERRIDE: reject a serial/batch that already exists in product_lot against a
+				// different product. product_lot.batch is globally unique, so reusing such a BCN makes
+				// core Productlot::create() collide and abort the reception mid-transaction (the
+				// duplicate-key hang). Reuse on the same product is left to core (adds to the lot).
+				if (!$error) {
+					$enteredLot = (string) GETPOST($lot, 'alpha');
+					if ($enteredLot !== '' && TXSReceptionDispatch::batchExistsForOtherProduct($db, $enteredLot, $productId)) {
+						$text = $langs->transnoentities('Line').' '.($numline).'-'.((int) $reg[1] + 1);
+						setEventMessages('Serial / batch "'.dol_escape_htmltag($enteredLot).'" already exists for another product and cannot be reused ('.$text.').', null, 'errors');
+						$error++;
+					}
+				}
+
 				if (!$error) {
 					$result = $object->dispatchProduct($user, $productId, $qtytomove, GETPOSTINT($ent), $puformove, GETPOST('comment'), $dDLUO, $dDLC, GETPOST($lot, 'alpha'), GETPOSTINT($fk_commandefourndet), $notrigger);
 					if ($result < 0) {
@@ -406,6 +446,23 @@ if ($action == 'dispatch' && $permissiontoreceive) {
 		$db->commit();
 
 		setEventMessages($langs->trans("ReceptionsRecorded"), null, 'mesgs');
+
+		// TXS CORE OVERRIDE: the image-capture modal and the bypass path submit this form with
+		// fetch() and only navigate on a JSON {success, redirect}. When expansion receive (bulk)
+		// owns the submit it commits its reception inside the doActions hook and then falls through
+		// here; replying with an HTML 302 would leave that fetch unable to parse the response and
+		// the loading overlay stuck. Detect the bypass fetch and answer with the same JSON contract,
+		// redirecting to the created reception card. Normal (non-fetch) submits keep the HTML redirect.
+		if (GETPOST('bypass_reception', 'int') || GETPOST('bypass_reception', 'alpha')) {
+			dol_include_once('/txsreception/class/txsreceptionbulk.class.php');
+			dol_include_once('/txsreception/bypass_reception.php');
+			$txsReceptionId = TXSReceptionBulk::getLastReceptionId();
+			$txsBypassRedirect = ($txsReceptionId > 0)
+				? (DOL_URL_ROOT.'/reception/card.php?id='.$txsReceptionId)
+				: (DOL_URL_ROOT.'/fourn/commande/dispatch.php?id='.$id);
+			$txsProgressToken = GETPOST('bypass_progress_token', 'alphanohtml');
+			txsreceptionEmitBypassJson(true, $txsBypassRedirect, '', $txsProgressToken);
+		}
 
 		header("Location: dispatch.php?id=".$id);
 		exit();
@@ -678,12 +735,17 @@ if ($id > 0 || !empty($ref)) {
 		print '<table class="noborder centpercent">';
 
 		// Set $products_dispatched with qty dispatched for each product id
+		// TXS CORE OVERRIDE: group by the order line only. A single PO line can be received across
+		// several variants (e.g. condition _A and _B of the same part), which core grouped by
+		// (l.rowid, cfd.fk_product) into separate rows; the per-line assignment below then kept only
+		// the last variant's qty, leaving the line looking under-dispatched. Summing per order line
+		// counts every variant received against that line.
 		$products_dispatched = array();
-		$sql = "SELECT l.rowid, cfd.fk_product, sum(cfd.qty) as qty";
+		$sql = "SELECT l.rowid, sum(cfd.qty) as qty";
 		$sql .= " FROM ".MAIN_DB_PREFIX."receptiondet_batch as cfd";
 		$sql .= " LEFT JOIN ".MAIN_DB_PREFIX."commande_fournisseurdet as l on l.rowid = cfd.fk_elementdet";
 		$sql .= " WHERE cfd.fk_element = ".((int) $object->id);
-		$sql .= " GROUP BY l.rowid, cfd.fk_product";
+		$sql .= " GROUP BY l.rowid";
 
 		$resql = $db->query($sql);
 		if ($resql) {
@@ -1053,9 +1115,9 @@ if ($id > 0 || !empty($ref)) {
 						// Warehouse
 						print '<td class="right">';
 						if (count($listwarehouses) > 1) {
-							print $formproduct->selectWarehouses(GETPOST("entrepot".$suffix) ? GETPOST("entrepot".$suffix) : ($objp->fk_default_warehouse ? $objp->fk_default_warehouse : ''), "entrepot".$suffix, '', 1, 0, $objp->fk_product, '', 1, 0, array(), 'csswarehouse'.$suffix);
+							print $formproduct->selectWarehouses(GETPOST("entrepot".$suffix) ? GETPOST("entrepot".$suffix) : ($objp->fk_default_warehouse ? $objp->fk_default_warehouse : ''), "entrepot".$suffix, '', 1, 0, $objp->fk_product, '', 1, 0, array(), 'maxwidth200 csswarehouse'.$suffix, array(), 0);
 						} elseif (count($listwarehouses) == 1) {
-							print $formproduct->selectWarehouses(GETPOST("entrepot".$suffix) ? GETPOST("entrepot".$suffix) : ($objp->fk_default_warehouse ? $objp->fk_default_warehouse : ''), "entrepot".$suffix, '', 0, 0, $objp->fk_product, '', 1, 0, array(), 'csswarehouse'.$suffix);
+							print $formproduct->selectWarehouses(GETPOST("entrepot".$suffix) ? GETPOST("entrepot".$suffix) : ($objp->fk_default_warehouse ? $objp->fk_default_warehouse : ''), "entrepot".$suffix, '', 0, 0, $objp->fk_product, '', 1, 0, array(), 'maxwidth200 csswarehouse'.$suffix, array(), 0);
 						} else {
 							$langs->load("errors");
 							print $langs->trans("ErrorNoWarehouseDefined");
@@ -1212,6 +1274,39 @@ if ($id > 0 || !empty($ref)) {
 		$num = $db->num_rows($resql);
 		$i = 0;
 
+		// TXS CORE OVERRIDE (HD-202606-0058): once the already-received history grows past a
+		// threshold, collapse it to one summary row per reception wave and lazy-load each wave's
+		// pieces on expand. Rendering every received piece (1900+ on the large Staples PO) with a
+		// per-row reception/lot/product resolution made this page take minutes to open, and the cost
+		// grew with every new wave. Collapsed mode renders one row per wave from a single GROUP BY
+		// query, so open time stays roughly constant regardless of how much has been received. The
+		// full per-piece render is kept for small POs and for the inline edit form (action=editline).
+		// Collapse only applies with the reception module on, since waves are keyed by fk_reception.
+		$txsGroupThreshold = getDolGlobalInt('TXSRECEPTION_DISPATCH_RECEIVED_GROUP_THRESHOLD', 200);
+		if ($txsGroupThreshold <= 0) {
+			$txsGroupThreshold = 200; // 0/unset falls back to the default, never "always collapse"
+		}
+		$txsCollapseWaves = (isModEnabled("reception") && $num > $txsGroupThreshold && $action != 'editline');
+
+		// Number of columns in this table (must match the header below); used for collapsed-row colspans.
+		$txsColCount = (isModEnabled("reception") ? 1 : 0) + 1 + 2; // reception + product + 2 dates
+		if (isModEnabled('productbatch')) {
+			$txsColCount += 1;
+			if (!getDolGlobalString('PRODUCT_DISABLE_SELLBY')) {
+				$txsColCount += 1;
+			}
+			if (!getDolGlobalString('PRODUCT_DISABLE_EATBY')) {
+				$txsColCount += 1;
+			}
+		}
+		$txsColCount += 3; // qty + warehouse + comment
+		if (getDolGlobalString('SUPPLIER_ORDER_USE_DISPATCH_STATUS') && !isModEnabled("reception")) {
+			$txsColCount += 2;
+		} elseif (isModEnabled("reception")) {
+			$txsColCount += 1;
+		}
+		$txsColCount += 2; // trailing edit/delete columns (colspan 2)
+
 		if ($num > 0) {
 			print "<br>\n";
 
@@ -1253,8 +1348,102 @@ if ($id > 0 || !empty($ref)) {
 
 			print "</tr>\n";
 
+			// TXS CORE OVERRIDE (HD-202606-0058): collapsed-by-wave summary rows. One indexed GROUP BY
+			// query returns one row per reception wave (waves, not pieces), each expandable to lazy-load
+			// its pieces from txsreception/ajax/get_dispatch_received_lines.php.
+			if ($txsCollapseWaves) {
+				$sqlWaves = "SELECT cfd.fk_reception, COUNT(*) as nbpieces, SUM(cfd.qty) as qtytotal,";
+				$sqlWaves .= " MIN(cfd.datec) as datec_min, MIN(cfd.rowid) as rowid_min,";
+				$sqlWaves .= " r.ref as reception_ref, r.date_delivery, r.fk_statut";
+				$sqlWaves .= " FROM ".MAIN_DB_PREFIX."receptiondet_batch as cfd";
+				$sqlWaves .= " LEFT JOIN ".MAIN_DB_PREFIX."reception as r ON r.rowid = cfd.fk_reception";
+				$sqlWaves .= " WHERE cfd.fk_element = ".((int) $object->id);
+				$sqlWaves .= " GROUP BY cfd.fk_reception, r.ref, r.date_delivery, r.fk_statut";
+				$sqlWaves .= " ORDER BY rowid_min ASC";
 
-			while ($i < $num) {
+				$resWaves = $db->query($sqlWaves);
+				if ($resWaves) {
+					$txsTmpReception = new Reception($db);
+					while ($objw = $db->fetch_object($resWaves)) {
+						$waveId = (int) $objw->fk_reception;
+
+						print '<tr class="oddeven txs-disp-wave" data-reception="'.$waveId.'" data-open="0" data-loaded="0" style="cursor:pointer;">';
+
+						// Reception (caret + link). The caret sits outside the link so the row toggles
+						// while the reception link still navigates.
+						print '<td class="nowraponall">';
+						print '<i class="fas fa-chevron-right txs-disp-caret-icon" style="width:12px; margin-right:5px;"></i>';
+						if ($waveId > 0) {
+							$txsTmpReception->id = $waveId;
+							$txsTmpReception->ref = $objw->reception_ref;
+							$txsTmpReception->statut = ($objw->fk_statut !== null ? (int) $objw->fk_statut : 0);
+							$txsTmpReception->status = $txsTmpReception->statut;
+							print $txsTmpReception->getNomUrl(1);
+						} else {
+							print '<span class="opacitymedium">'.$langs->trans("Reception").'</span>';
+						}
+						print '</td>';
+
+						// Product column: summary count of received lines in this wave.
+						print '<td class="opacitymedium">'.$langs->trans("NbOfLines").': '.((int) $objw->nbpieces).'</td>';
+
+						// Date creation (earliest in the wave)
+						print '<td class="center">'.dol_print_date($db->jdate($objw->datec_min), 'day').'</td>';
+
+						// Date delivery (planned)
+						print '<td class="center">'.(!empty($objw->date_delivery) ? dol_print_date($db->jdate($objw->date_delivery), 'day') : '').'</td>';
+
+						// batch / sellby / eatby (summarized away at wave level)
+						if (isModEnabled('productbatch')) {
+							print '<td></td>';
+							if (!getDolGlobalString('PRODUCT_DISABLE_SELLBY')) {
+								print '<td></td>';
+							}
+							if (!getDolGlobalString('PRODUCT_DISABLE_EATBY')) {
+								print '<td></td>';
+							}
+						}
+
+						// Qty dispatched (sum for the wave)
+						print '<td class="right">'.price2num($objw->qtytotal).'</td>';
+
+						// Warehouse (varies within a wave; shown per piece on expand)
+						print '<td></td>';
+
+						// Comment
+						print '<td></td>';
+
+						// Status (mirrors the per-piece reception-status cell)
+						print '<td class="center">';
+						if ($waveId > 0 && $objw->fk_statut !== null) {
+							print $txsTmpReception->getLibStatut(5);
+						}
+						print '</td>';
+
+						// Edit/delete columns (per-piece on expand)
+						print '<td class="center" colspan="2"></td>';
+
+						print "</tr>\n";
+					}
+					$db->free($resWaves);
+				} else {
+					dol_print_error($db);
+				}
+
+				// Load the expand/collapse + lazy-load assets (only when the collapsed view is used).
+				$txsDispGroupsCfg = array(
+					'url' => dol_buildpath('/custom/txsreception/ajax/get_dispatch_received_lines.php', 1),
+					'id' => (int) $object->id,
+					'token' => newToken(),
+					'colspan' => (int) $txsColCount,
+					'pageSize' => 100,
+					'loadingText' => $langs->trans("Loading"),
+				);
+				print '<script type="text/javascript">window.txsDispatchReceivedGroupsConfig = '.json_encode($txsDispGroupsCfg).';</script>';
+				print '<script type="text/javascript" src="'.dol_escape_htmltag(dol_buildpath('/custom/txsreception/js/dispatch_received_groups.js', 1).'?v='.urlencode(defined('DOL_VERSION') ? DOL_VERSION : '1.0')).'"></script>';
+			}
+
+			while (!$txsCollapseWaves && $i < $num) {
 				$objp = $db->fetch_object($resql);
 
 				if ($action == 'editline' && $lineid == $objp->dispatchlineid) {
@@ -1272,25 +1461,62 @@ if ($id > 0 || !empty($ref)) {
 				if (isModEnabled("reception")) {
 					print '<td class="nowraponall">';
 					if (!empty($objp->fk_reception)) {
-						$reception = new Reception($db);
-						$reception->fetch($objp->fk_reception);
+						// TXS CORE OVERRIDE: cache the Reception per id. Reception::fetch() loads all
+						// of its lines, so re-fetching it per row was O(N^2) on large receipts.
+						if (!isset($conf->cache['txs_reception'][$objp->fk_reception])) {
+							$tmpreception = new Reception($db);
+							$tmpreception->fetch($objp->fk_reception);
+							$conf->cache['txs_reception'][$objp->fk_reception] = $tmpreception;
+						}
+						$reception = $conf->cache['txs_reception'][$objp->fk_reception];
 						print $reception->getNomUrl(1);
 					}
 
 					print "</td>";
 				}
 
-				// Product
+				// TXS CORE OVERRIDE: a serial received against the parent product is reclassified to
+				// its variant at validation, which repoints product_lot.fk_product to the variant but
+				// leaves receptiondet_batch.fk_product on the parent. Resolve the lot by batch (globally
+				// unique) so this list shows the VARIANT the lot actually lives on and a populated BCN,
+				// instead of the parent with a blank batch cell (a fetch by parent id + batch would miss).
+				$txsLot = null;
+				$txsDisplayProductId = (int) $objp->fk_product;
+				if (isModEnabled('productbatch') && !empty($objp->batch)) {
+					$txsLotCacheKey = (string) $objp->batch;
+					if (!isset($conf->cache['txs_lot_by_batch'][$txsLotCacheKey])) {
+						$txsResolvedLot = null;
+						$sqlLot = 'SELECT rowid FROM '.MAIN_DB_PREFIX."product_lot WHERE batch = '".$db->escape($objp->batch)."'".$db->plimit(1);
+						$resLot = $db->query($sqlLot);
+						if ($resLot) {
+							$objLot = $db->fetch_object($resLot);
+							$db->free($resLot);
+							if ($objLot) {
+								$candidateLot = new Productlot($db);
+								if ($candidateLot->fetch((int) $objLot->rowid) > 0) {
+									$txsResolvedLot = $candidateLot;
+								}
+							}
+						}
+						$conf->cache['txs_lot_by_batch'][$txsLotCacheKey] = $txsResolvedLot;
+					}
+					$txsLot = $conf->cache['txs_lot_by_batch'][$txsLotCacheKey];
+					if (is_object($txsLot) && (int) $txsLot->fk_product > 0) {
+						$txsDisplayProductId = (int) $txsLot->fk_product;
+					}
+				}
+
+				// Product (variant the lot resolves to, falling back to the reception line product)
 				print '<td class="tdoverflowmax150">';
-				if (empty($conf->cache['product'][$objp->fk_product])) {
+				if (empty($conf->cache['product'][$txsDisplayProductId])) {
 					$tmpproduct = new Product($db);
-					$tmpproduct->fetch($objp->fk_product);
-					$conf->cache['product'][$objp->fk_product] = $tmpproduct;
+					$tmpproduct->fetch($txsDisplayProductId);
+					$conf->cache['product'][$txsDisplayProductId] = $tmpproduct;
 				} else {
-					$tmpproduct = $conf->cache['product'][$objp->fk_product];
+					$tmpproduct = $conf->cache['product'][$txsDisplayProductId];
 				}
 				print $tmpproduct->getNomUrl(1);
-				print ' - '.$objp->label;
+				print ' - '.(!empty($tmpproduct->label) ? $tmpproduct->label : $objp->label);
 				print "</td>\n";
 
 				// Date creation
@@ -1310,15 +1536,25 @@ if ($id > 0 || !empty($ref)) {
 				// Batch / Eat by / Sell by
 				if (isModEnabled('productbatch')) {
 					if ($objp->batch) {
-						include_once DOL_DOCUMENT_ROOT.'/product/stock/class/productlot.class.php';
-						$lot = new Productlot($db);
-						$lot->fetch(0, $objp->pid, $objp->batch);
-						print '<td class="dispatch_batch_number">'.$lot->getNomUrl(1).'</td>';
-						if (!getDolGlobalString('PRODUCT_DISABLE_SELLBY')) {
-							print '<td class="dispatch_dlc">'.dol_print_date($lot->sellby, 'day').'</td>';
-						}
-						if (!getDolGlobalString('PRODUCT_DISABLE_EATBY')) {
-							print '<td class="dispatch_dluo">'.dol_print_date($lot->eatby, 'day').'</td>';
+						// TXS CORE OVERRIDE: render the BCN from the batch-resolved lot (see above) so the
+						// link still appears after the lot was reclassified to a variant. Falls back to the
+						// raw batch string when the lot row cannot be resolved.
+						if (is_object($txsLot) && $txsLot->id > 0) {
+							print '<td class="dispatch_batch_number">'.$txsLot->getNomUrl(1).'</td>';
+							if (!getDolGlobalString('PRODUCT_DISABLE_SELLBY')) {
+								print '<td class="dispatch_dlc">'.dol_print_date($txsLot->sellby, 'day').'</td>';
+							}
+							if (!getDolGlobalString('PRODUCT_DISABLE_EATBY')) {
+								print '<td class="dispatch_dluo">'.dol_print_date($txsLot->eatby, 'day').'</td>';
+							}
+						} else {
+							print '<td class="dispatch_batch_number">'.dol_escape_htmltag($objp->batch).'</td>';
+							if (!getDolGlobalString('PRODUCT_DISABLE_SELLBY')) {
+								print '<td class="dispatch_dlc"></td>';
+							}
+							if (!getDolGlobalString('PRODUCT_DISABLE_EATBY')) {
+								print '<td class="dispatch_dluo"></td>';
+							}
 						}
 					} else {
 						print '<td class="dispatch_batch_number"></td>';
@@ -1345,9 +1581,9 @@ if ($id > 0 || !empty($ref)) {
 				if ($action == 'editline' && $lineid == $objp->dispatchlineid) {
 					$warehouse_id = GETPOSTINT("fk_entrepot") ? GETPOSTINT("fk_entrepot") : ($objp->warehouse_id ? $objp->warehouse_id : '');
 					if (count($listwarehouses) > 1) {
-						print $formproduct->selectWarehouses($warehouse_id, "fk_entrepot", '', 1, 0, $objp->fk_product, '', 1, 1, array(), 'csswarehouse');
+						print $formproduct->selectWarehouses($warehouse_id, "fk_entrepot", '', 1, 0, $objp->fk_product, '', 1, 1, array(), 'maxwidth200 csswarehouse', array(), 0);
 					} elseif (count($listwarehouses) == 1) {
-						print $formproduct->selectWarehouses($warehouse_id, "fk_entrepot", '', 0, 0, $objp->fk_product, '', 1, 1, array(), 'csswarehouse');
+						print $formproduct->selectWarehouses($warehouse_id, "fk_entrepot", '', 0, 0, $objp->fk_product, '', 1, 1, array(), 'maxwidth200 csswarehouse', array(), 0);
 					} else {
 						$langs->load("errors");
 						print $langs->trans("ErrorNoWarehouseDefined");

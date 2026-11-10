@@ -34,6 +34,31 @@
  *  \brief      File for class to manage receptions
  */
 
+/* =====================================================================================
+ * TXS CORP CORE OVERRIDE - DO NOT EDIT IN PLACE WITHOUT UPDATING txsreception/docs/CORE_OVERRIDES.md
+ * -------------------------------------------------------------------------------------
+ * This is a modified copy of the core Dolibarr file reception/class/reception.class.php.
+ * It is staged under htdocs/custom/ and deployed by hand to htdocs/reception/class/reception.class.php.
+ *
+ * Divergence from stock core (Dolibarr v22):
+ *   valid() stock-increment loop:
+ *   - Stock is booked on the RECEPTION LINE product (receptiondet_batch.fk_product) when it is set
+ *     and differs from the purchase-order line product, instead of always on the order-line product
+ *     (commande_fournisseurdet.fk_product). This lets receptions book lots/stock directly on the
+ *     selected VARIANT, eliminating the parent->variant reclassification stock movements. When the
+ *     reception line product equals the order line product (every standard reception) behavior is
+ *     byte-identical to core.
+ *   - A guarded progress callback (txsreceptionReportValidateProgress) is invoked inside the loop so
+ *     the receiving overlay can show an accurate progress bar. It is a no-op when txsreception is not
+ *     loaded, so the core copy stays decoupled.
+ *   delete() stock-reversal loop:
+ *   - The reversal (MouvementStock::livraison) releases stock from the SAME reception line product
+ *     (variant) that valid() booked it on, using the same fallback to the order-line product. Without
+ *     this, deleting a variant reception reverses on the parent, which has no such batch/stock and
+ *     re-hits the global unique-batch collision on the parent (HTTP 500 on delete).
+ *   No other behavior is changed. Search this file for "TXS CORE OVERRIDE" to find each edit.
+ * ===================================================================================== */
+
 require_once DOL_DOCUMENT_ROOT.'/core/class/commonobject.class.php';
 require_once DOL_DOCUMENT_ROOT."/core/class/commonobjectline.class.php";
 require_once DOL_DOCUMENT_ROOT.'/core/class/commonincoterm.class.php';
@@ -610,10 +635,13 @@ class Reception extends CommonObject
 
 			// Loop on each product line to add a stock movement
 			// TODO in future, reception lines may not be linked to order line
+			// TXS CORE OVERRIDE: also select the reception line product (ed.fk_product) so stock can be
+			// booked on the selected variant rather than always on the order-line (parent) product.
 			$sql = "SELECT cd.fk_product, cd.subprice, cd.remise_percent,";
 			$sql .= " ed.rowid, ed.qty, ed.fk_entrepot,";
 			$sql .= " ed.eatby, ed.sellby, ed.batch,";
-			$sql .= " ed.cost_price";
+			$sql .= " ed.cost_price,";
+			$sql .= " ed.fk_product as line_fk_product";
 			$sql .= " FROM ".MAIN_DB_PREFIX."commande_fournisseurdet as cd,";
 			$sql .= " ".MAIN_DB_PREFIX."receptiondet_batch as ed";
 			$sql .= " WHERE ed.fk_reception = ".((int) $this->id);
@@ -628,9 +656,21 @@ class Reception extends CommonObject
 
 					$qty = $obj->qty;
 
+					// TXS CORE OVERRIDE: report accurate progress for the receiving overlay. No-op when
+					// txsreception is not loaded, so this core copy stays decoupled from the module.
+					if (function_exists('txsreceptionReportValidateProgress')) {
+						txsreceptionReportValidateProgress($i + 1, $cpt);
+					}
+
 					if ($qty == 0 || ($qty < 0 && !getDolGlobalInt('RECEPTION_ALLOW_NEGATIVE_QTY'))) {
 						continue;
 					}
+
+					// TXS CORE OVERRIDE: prefer the reception line product (variant) when set and different
+					// from the order-line product; otherwise fall back to core behavior (order-line product).
+					$prodForMove = (!empty($obj->line_fk_product) && $obj->line_fk_product != $obj->fk_product)
+						? $obj->line_fk_product
+						: $obj->fk_product;
 
 					dol_syslog(get_class($this)."::valid movement index ".$i." ed.rowid=".$obj->rowid);
 
@@ -644,7 +684,7 @@ class Reception extends CommonObject
 
 						// We decrement stock of product (and sub-products) -> update table llx_product_stock (key of this table is fk_product+fk_entrepot) and add a movement record.
 						$inventorycode = '';
-						$result = $mouvS->reception($user, $obj->fk_product, $obj->fk_entrepot, $qty, $obj->cost_price, $langs->trans("ReceptionValidatedInDolibarr", $numref), '', '', '', '', 0, $inventorycode);
+						$result = $mouvS->reception($user, $prodForMove, $obj->fk_entrepot, $qty, $obj->cost_price, $langs->trans("ReceptionValidatedInDolibarr", $numref), '', '', '', '', 0, $inventorycode);
 
 						if (intval($result) < 0) {
 							$error++;
@@ -657,7 +697,7 @@ class Reception extends CommonObject
 						// We decrement stock of product (and sub-products) -> update table llx_product_stock (key of this table is fk_product+fk_entrepot) and add a movement record.
 						// Note: ->fk_origin_stock = id into table llx_product_batch (may be rename into llx_product_stock_batch in another version)
 						$inventorycode = '';
-						$result = $mouvS->reception($user, $obj->fk_product, $obj->fk_entrepot, $qty, $obj->cost_price, $langs->trans("ReceptionValidatedInDolibarr", $numref), $this->db->jdate($obj->eatby), $this->db->jdate($obj->sellby), $obj->batch, '', 0, $inventorycode);
+						$result = $mouvS->reception($user, $prodForMove, $obj->fk_entrepot, $qty, $obj->cost_price, $langs->trans("ReceptionValidatedInDolibarr", $numref), $this->db->jdate($obj->eatby), $this->db->jdate($obj->sellby), $obj->batch, '', 0, $inventorycode);
 
 						if (intval($result) < 0) {
 							$error++;
@@ -1126,7 +1166,12 @@ class Reception extends CommonObject
 			$langs->load("agenda");
 
 			// Loop on each product line to add a stock movement
-			$sql = "SELECT cd.fk_product, cd.subprice, ed.qty, ed.fk_entrepot, ed.eatby, ed.sellby, ed.batch, ed.rowid as receptiondet_batch_id";
+			// TXS CORE OVERRIDE: also select the reception line product (ed.fk_product). valid() books
+			// stock on the selected variant, so the delete reversal must release it from the SAME
+			// variant. Reversing on the order-line (parent) product instead would fail to find the
+			// batch/stock and re-hit the global unique-batch collision on the parent (the delete 500).
+			$sql = "SELECT cd.fk_product, cd.subprice, ed.qty, ed.fk_entrepot, ed.eatby, ed.sellby, ed.batch, ed.rowid as receptiondet_batch_id,";
+			$sql .= " ed.fk_product as line_fk_product";
 			$sql .= " FROM ".MAIN_DB_PREFIX."commande_fournisseurdet as cd,";
 			$sql .= " ".MAIN_DB_PREFIX."receptiondet_batch as ed";
 			$sql .= " WHERE ed.fk_reception = ".((int) $this->id);
@@ -1144,7 +1189,13 @@ class Reception extends CommonObject
 					// we do not log origin because it will be deleted
 					$mouvS->origin = null;
 
-					$result = $mouvS->livraison($user, $obj->fk_product, $obj->fk_entrepot, $obj->qty, 0, $langs->trans("ReceptionDeletedInDolibarr", $this->ref), '', $obj->eatby ? $this->db->jdate($obj->eatby) : null, $obj->sellby ? $this->db->jdate($obj->sellby) : null, $obj->batch); // Price is set to 0, because we don't want to see WAP changed
+					// TXS CORE OVERRIDE: reverse on the reception line product (variant) when set and
+					// different from the order-line product; otherwise fall back to core behavior.
+					$prodForMove = (!empty($obj->line_fk_product) && $obj->line_fk_product != $obj->fk_product)
+						? $obj->line_fk_product
+						: $obj->fk_product;
+
+					$result = $mouvS->livraison($user, $prodForMove, $obj->fk_entrepot, $obj->qty, 0, $langs->trans("ReceptionDeletedInDolibarr", $this->ref), '', $obj->eatby ? $this->db->jdate($obj->eatby) : null, $obj->sellby ? $this->db->jdate($obj->sellby) : null, $obj->batch); // Price is set to 0, because we don't want to see WAP changed
 					if ($result < 0) {
 						$error++;
 						$this->error = $mouvS->error;
@@ -2021,10 +2072,15 @@ class Reception extends CommonObject
 
 				// Loop on each product line to add a stock movement
 				// TODO possibilite de receptionner a partir d'une propale ou autre origine
+				// TXS CORE OVERRIDE: also select the reception line product (ed.fk_product) so the
+				// back-to-draft reversal releases stock from the SAME variant that valid()/delete()
+				// booked it on, rather than always the order-line (parent) product. valid() and
+				// delete() were made variant-aware in TXS-CORE-011; setDraft() was missed.
 				$sql = "SELECT cd.fk_product, cd.subprice,";
 				$sql .= " ed.rowid, ed.qty, ed.fk_entrepot,";
 				$sql .= " ed.eatby, ed.sellby, ed.batch,";
-				$sql .= " ed.cost_price";
+				$sql .= " ed.cost_price,";
+				$sql .= " ed.fk_product as line_fk_product";
 				$sql .= " FROM ".MAIN_DB_PREFIX."commande_fournisseurdet as cd,";
 				$sql .= " ".MAIN_DB_PREFIX."receptiondet_batch as ed";
 				$sql .= " WHERE ed.fk_reception = ".((int) $this->id);
@@ -2043,6 +2099,14 @@ class Reception extends CommonObject
 							continue;
 						}
 
+						// TXS CORE OVERRIDE: prefer the reception line product (variant) when set and
+						// different from the order-line product; otherwise fall back to core behavior
+						// (order-line product). Same expression used in valid()/delete(). For standard
+						// (non-variant) receptions line_fk_product == fk_product, so behavior is identical.
+						$prodForMove = (!empty($obj->line_fk_product) && $obj->line_fk_product != $obj->fk_product)
+							? $obj->line_fk_product
+							: $obj->fk_product;
+
 						dol_syslog(get_class($this)."::reopen reception movement index ".$i." ed.rowid=".$obj->rowid);
 
 						//var_dump($this->lines[$i]);
@@ -2055,7 +2119,7 @@ class Reception extends CommonObject
 
 							// We decrement stock of product (and sub-products) -> update table llx_product_stock (key of this table is fk_product+fk_entrepot) and add a movement record
 							$inventorycode = '';
-							$result = $mouvS->livraison($user, $obj->fk_product, $obj->fk_entrepot, $qty, $obj->cost_price, $langs->trans("ReceptionBackToDraftInDolibarr", $this->ref), '', '', '', '', 0, $inventorycode);
+							$result = $mouvS->livraison($user, $prodForMove, $obj->fk_entrepot, $qty, $obj->cost_price, $langs->trans("ReceptionBackToDraftInDolibarr", $this->ref), '', '', '', '', 0, $inventorycode);
 							if ($result < 0) {
 								$this->error = $mouvS->error;
 								$this->errors = $mouvS->errors;
@@ -2067,7 +2131,7 @@ class Reception extends CommonObject
 
 							// We decrement stock of product (and sub-products) -> update table llx_product_stock (key of this table is fk_product+fk_entrepot) and add a movement record
 							$inventorycode = '';
-							$result = $mouvS->livraison($user, $obj->fk_product, $obj->fk_entrepot, $qty, $obj->cost_price, $langs->trans("ReceptionBackToDraftInDolibarr", $this->ref), '', $this->db->jdate($obj->eatby), $this->db->jdate($obj->sellby), $obj->batch, 0, $inventorycode);
+							$result = $mouvS->livraison($user, $prodForMove, $obj->fk_entrepot, $qty, $obj->cost_price, $langs->trans("ReceptionBackToDraftInDolibarr", $this->ref), '', $this->db->jdate($obj->eatby), $this->db->jdate($obj->sellby), $obj->batch, 0, $inventorycode);
 							if ($result < 0) {
 								$this->error = $mouvS->error;
 								$this->errors = $mouvS->errors;

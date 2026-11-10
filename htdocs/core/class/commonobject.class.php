@@ -5919,7 +5919,7 @@ abstract class CommonObject
 		// Increase limit for PDF build
 		$err = error_reporting();
 		error_reporting(0);
-		@set_time_limit(120);
+		@set_time_limit(600);
 		error_reporting($err);
 
 		// If selected model is a filename template (then $modele="modelname" or "modelname:filename")
