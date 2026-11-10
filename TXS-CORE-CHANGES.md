@@ -60,6 +60,7 @@ Each change entry **must include**:
 | 22.0.2           | 3                 | TXS-CORE-011  | Reception receiving overrides: performance, direct-to-variant stock, split-line display |
 | 22.0.2           | 1                 | TXS-CORE-012  | Reception back-to-draft: variant-aware stock reversal in `setDraft()` (parity with valid/delete) |
 | 22.0.x           | 1                 | TXS-CORE-013  | Remove `$oldpmp > 0` guard so a real zero cost basis is averaged, not overwritten |
+| 22.0.2           | 1                 | TXS-CORE-014  | Raise PDF/document build time limit in `commonGenerateDocument()` from 120 to 600 seconds |
 
 ---
 
@@ -946,6 +947,52 @@ if (($oldqtytouse + $qty) != 0) {
 - `barcodedisp_apply_weighted_average_wac()` is retained: it still handles the zero-incoming-price dilution that core skips, which `barcodedisposition/tests/test_wac_weighted_average.php` scenario S3 asserts. Run that test script before and after this change, and again after any Dolibarr upgrade.
 - Search for `--- Begin Customization --- TXS Corp: HD-202608-0012` to locate the patched site.
 - Staged copy: `htdocs/custom/.corechanges/htdocs/product/stock/class/mouvementstock.class.php`. Redeploy over the matching core file after an upgrade; do not blindly overwrite a newer core file.
+
+### [2026-08-11] TXS-CORE-014 - Raise Document Build Time Limit to 600 Seconds
+
+**Developer:** TXS Corp / Seth
+**Dolibarr Version:** 22.0.2
+**Change Type:** Enhancement
+
+**Files Affected:**
+- `htdocs/core/class/commonobject.class.php`
+
+**Description:**
+`CommonObject::commonGenerateDocument()` is the shared entry point every document model (PDF and ODT, for invoices, orders, shipments, receptions and the rest) goes through. Upstream it raises PHP's execution limit to 120 seconds before building the file. TXS raises it to 600 seconds. Nothing else in the function changes; documents that already finished inside 120 seconds behave exactly as before.
+
+**Reason / Business Case:**
+> Large TXS documents (many lines, serials and images) can take longer than two minutes to build. At the upstream 120-second cap PHP stops the request part-way, so the user gets an error and no document. 600 seconds lets those builds complete.
+
+##### **Code Changes**
+
+**Before Code (Upstream):**
+*File:* `htdocs/core/class/commonobject.class.php`
+*Lines:* 5919-5923
+
+```php
+// Increase limit for PDF build
+$err = error_reporting();
+error_reporting(0);
+@set_time_limit(120);
+error_reporting($err);
+```
+
+**After Code (TXS Customization):**
+*File:* `htdocs/core/class/commonobject.class.php`
+*Lines:* 5919-5923
+
+```php
+// Increase limit for PDF build
+$err = error_reporting();
+error_reporting(0);
+@set_time_limit(600);
+error_reporting($err);
+```
+
+**Upgrade Notes:**
+- This edit has no `--- Begin Customization ---` marker. Find it by searching `commonGenerateDocument` for `@set_time_limit(`, and re-apply 600 after any Dolibarr upgrade.
+- `set_time_limit()` only governs PHP's own timer. PHP-FPM `request_terminate_timeout`, Apache `Timeout`/`ProxyTimeout` and the load balancer idle timeout can still end a long request earlier; keep them at least as long if very large documents are expected.
+- Staged copy: `htdocs/custom/.corechanges/htdocs/core/class/commonobject.class.php`.
 
 ---
 
