@@ -576,12 +576,16 @@ class MouvementStock extends CommonObject
 					// Note: Price should always be >0 or 0. PMP should be always >0 (calculated on input)
 					if ($price > 0 || (getDolGlobalString('STOCK_UPDATE_AWP_EVEN_WHEN_ENTRY_PRICE_IS_NULL') && $price == 0 && in_array($this->origin_type, array('order_supplier', 'invoice_supplier')))) {
 						$oldqtytouse = ($oldqty >= 0 ? $oldqty : 0);
-						// We make a test on oldpmp>0 to avoid to use normal rule on old data with no pmp field defined
-						if ($oldpmp > 0 && ($oldqtytouse + $qty) != 0) {
+						// --- Begin Customization --- TXS Corp: HD-202608-0012 removed the oldpmp>0 guard.
+						// A pmp of 0 is a real cost basis on graded stock, not "never set", so averaging must
+						// run. With no prior stock the average reduces to the input price anyway, which is all
+						// the guard protected. The outer $price > 0 gate is deliberately left untouched.
+						if (($oldqtytouse + $qty) != 0) {
 							$newpmp = price2num((($oldqtytouse * $oldpmp) + ($qty * $price)) / ($oldqtytouse + $qty), 'MU');
 						} else {
-							$newpmp = $price; // For this product, PMP was not yet set. We set it to input price.
+							$newpmp = $price;
 						}
+						// --- End Customization ---
 						//print "oldqtytouse=".$oldqtytouse." oldpmp=".$oldpmp." oldqtywarehousetouse=".$oldqtywarehousetouse." ";
 						//print "qty=".$qty." newpmp=".$newpmp;
 						//exit;

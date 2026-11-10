@@ -35,6 +35,30 @@
  *	\brief      Card of a reception
  */
 
+/* =====================================================================================
+ * TXS CORP CORE OVERRIDE - DO NOT EDIT IN PLACE WITHOUT UPDATING txsreception/docs/CORE_OVERRIDES.md
+ * -------------------------------------------------------------------------------------
+ * This is a modified copy of the core Dolibarr file reception/card.php.
+ * It is staged under htdocs/custom/ and deployed by hand to htdocs/reception/card.php.
+ *
+ * Divergence from stock core (Dolibarr v22):
+ *   1) Removed a redundant second $object->fetch()/fetch_thirdparty() in the load block: the object
+ *      is already loaded by core/actions_fetchobject.inc.php just above. Reception::fetch() loads
+ *      every line, so the duplicate call doubled that cost on large receipts.
+ *   2) Large receptions (line count over TXSRECEPTION_RECEPTION_CARD_GROUP_THRESHOLD, default 200)
+ *      are rendered as one collapsed row per product group; the per-barcode detail rows are loaded
+ *      on demand via custom/txsreception/ajax/get_reception_product_lines.php (paginated). Small
+ *      receptions render exactly as stock core.
+ *   3) Lines table now resolves each serial by batch (globally unique): a serial is received against
+ *      the parent product and reclassified to its variant at validation, which repoints
+ *      product_lot.fk_product and the bin_stock row to the VARIANT while receptiondet_batch.fk_product
+ *      stays on the parent. So the line now shows the VARIANT product (C2), the lot link resolves to
+ *      the variant, and the BIN Location column is server-rendered (header + body, sourced from
+ *      bin_stock via product_batch by batch) so it is populated (C3) and the header/body column counts
+ *      always match (C1). The binlocations classes make its own JS injector defer to these cells.
+ *   No other behavior is changed. Search this file for "TXS CORE OVERRIDE" to find each edit.
+ * ===================================================================================== */
+
 // Load Dolibarr environment
 require '../main.inc.php';
 require_once DOL_DOCUMENT_ROOT.'/core/class/html.formfile.class.php';
@@ -129,8 +153,12 @@ $hookmanager->initHooks(array('receptioncard', 'globalcard'));
 $date_delivery = dol_mktime(GETPOSTINT('date_deliveryhour'), GETPOSTINT('date_deliverymin'), 0, GETPOSTINT('date_deliverymonth'), GETPOSTINT('date_deliveryday'), GETPOSTINT('date_deliveryyear'));
 
 if ($id > 0 || !empty($ref)) {
-	$object->fetch($id, $ref);
-	$object->fetch_thirdparty();
+	// TXS CORE OVERRIDE: the object is already loaded by core/actions_fetchobject.inc.php above.
+	// Reception::fetch() reloads every line, so only fetch again if it was not already loaded.
+	if (empty($object->id)) {
+		$object->fetch($id, $ref);
+		$object->fetch_thirdparty();
+	}
 
 	$typeobject = '';
 	if (!empty($object->origin)) {
@@ -528,12 +556,29 @@ if (empty($reshook)) {
 			}
 		}
 	} elseif ($action == 'confirm_delete' && $confirm == 'yes' && $permissiontodelete) {
-		$result = $object->delete($user);
-		if ($result > 0) {
-			header("Location: ".DOL_URL_ROOT.'/reception/index.php');
-			exit;
+		// TXSReception: before core delete reverses stock, unwind any parent -> variant
+		// reclassification on this reception's lots. Core delete reverses each line with
+		// livraison(line.fk_product, batch); if a serial was reclassified to a variant the lot no
+		// longer matches the line product, so core tries to create the lot and collides with the
+		// globally-unique batch index (duplicate-key -> HTTP 500). Unwinding first lets the delete
+		// reverse cleanly with net-correct stock. Both steps share one transaction so a failure
+		// leaves nothing half-applied.
+		dol_include_once('/txsreception/class/txsreceptiondispatch.class.php');
+		$db->begin();
+		$txsUnwind = class_exists('TXSReceptionDispatch') ? TXSReceptionDispatch::unwindReceptionTransforms($db, $user, $object) : 0;
+		if ($txsUnwind < 0) {
+			$db->rollback();
+			setEventMessages('Failed to prepare reclassified lots for deletion. No changes were made.', null, 'errors');
 		} else {
-			setEventMessages($object->error, $object->errors, 'errors');
+			$result = $object->delete($user);
+			if ($result > 0) {
+				$db->commit();
+				header("Location: ".DOL_URL_ROOT.'/reception/index.php');
+				exit;
+			} else {
+				$db->rollback();
+				setEventMessages($object->error, $object->errors, 'errors');
+			}
 		}
 
 		// TODO add alternative status
@@ -1399,6 +1444,17 @@ if ($action == 'create') {
 	$num_prod = count($lines);
 	$indiceAsked = 0;
 
+	// TXS CORE OVERRIDE: decide whether to render the line table as collapsed product groups.
+	$txsGroupThreshold = getDolGlobalInt('TXSRECEPTION_RECEPTION_CARD_GROUP_THRESHOLD');
+	if ($txsGroupThreshold <= 0) {
+		$txsGroupThreshold = 200;
+	}
+	$txsUseGroupedReceptionView = ($action != 'editline' && $num_prod > $txsGroupThreshold);
+	if ($txsUseGroupedReceptionView) {
+		// This core page does not load the module language by default.
+		$langs->loadLangs(array('txsreception@txsreception'));
+	}
+
 	if ($object->id <= 0) {
 		print $langs->trans("NoRecordFound");
 		llxFooter();
@@ -1775,6 +1831,101 @@ if ($action == 'create') {
 	}
 	print '<br><br>';
 
+	// TXS CORE OVERRIDE: resolve, by batch (globally unique), the variant each serial was
+	// reclassified to and the BIN it was put away in. A serial is received against the parent
+	// product and reclassified to its variant at validation: this repoints product_lot.fk_product
+	// and the bin_stock row to the VARIANT, while receptiondet_batch.fk_product stays on the parent.
+	// Looking these up by the line's parent product (as core and the binlocations parent-keyed join
+	// do) therefore shows the parent and leaves the BIN cell empty. Resolving by batch fixes both.
+	$txsHasBinColumn = (isModEnabled('binlocations') && getDolGlobalInt('BINLOCATIONS_ENABLE_RECEPTION_BIN_COLUMN') && !empty($object->lines));
+	// Server-render the BIN column (header + body) only outside editline mode; in editline mode the
+	// binlocations script patches the merged header colspan, so we leave that path untouched.
+	$txsServerBinColumn = ($txsHasBinColumn && $action != 'editline');
+	$txsVariantPidByLine = array();
+	$txsBinHtmlByLine = array();
+	if (isModEnabled('productbatch') && !empty($object->lines)) {
+		$txsBatchByLine = array();
+		$txsBatchList = array();
+		foreach ($object->lines as $txsLn) {
+			if (empty($txsLn->id) || !isset($txsLn->batch)) {
+				continue;
+			}
+			$txsB = trim((string) $txsLn->batch);
+			if ($txsB === '') {
+				continue;
+			}
+			$txsBatchByLine[(int) $txsLn->id] = $txsB;
+			$txsBatchList[$txsB] = $txsB;
+		}
+
+		if (!empty($txsBatchList)) {
+			$txsEsc = array();
+			foreach ($txsBatchList as $txsB) {
+				$txsEsc[] = "'".$db->escape($txsB)."'";
+			}
+			$txsInList = implode(',', $txsEsc);
+
+			// Variant product id per batch (the product the lot now lives on).
+			$txsPidByBatch = array();
+			$txsSqlLot = 'SELECT batch, fk_product FROM '.MAIN_DB_PREFIX."product_lot WHERE batch IN (".$txsInList.")";
+			$txsResLot = $db->query($txsSqlLot);
+			if ($txsResLot) {
+				while ($txsObj = $db->fetch_object($txsResLot)) {
+					$txsPidByBatch[(string) $txsObj->batch] = (int) $txsObj->fk_product;
+				}
+				$db->free($txsResLot);
+			}
+			foreach ($txsBatchByLine as $txsLid => $txsB) {
+				if (!empty($txsPidByBatch[$txsB])) {
+					$txsVariantPidByLine[$txsLid] = (int) $txsPidByBatch[$txsB];
+				}
+			}
+
+			// BIN code per batch via product_batch -> bin_stock (keyed by batch, not parent product).
+			if ($txsServerBinColumn) {
+				$txsBinByBatch = array();
+				$txsSqlBin = 'SELECT pb.batch, bs.bin_code FROM '.MAIN_DB_PREFIX.'product_batch as pb';
+				$txsSqlBin .= ' INNER JOIN '.MAIN_DB_PREFIX.'bin_stock as bs ON bs.fk_product_batch = pb.rowid';
+				$txsSqlBin .= " WHERE pb.batch IN (".$txsInList.")";
+				$txsSqlBin .= ' AND bs.entity IN ('.getEntity('bin_stock').')';
+				$txsSqlBin .= ' ORDER BY bs.qty DESC';
+				$txsResBin = $db->query($txsSqlBin);
+				if ($txsResBin) {
+					while ($txsObj = $db->fetch_object($txsResBin)) {
+						$txsBb = (string) $txsObj->batch;
+						if (!isset($txsBinByBatch[$txsBb]) && $txsObj->bin_code !== null && $txsObj->bin_code !== '') {
+							$txsBinByBatch[$txsBb] = (string) $txsObj->bin_code;
+						}
+					}
+					$db->free($txsResBin);
+				}
+				// Build a standard binlocations BIN link per code (a Bin's ref equals its bin_code),
+				// cached per code, so every reception row shows the same clickable BIN as core.
+				$txsBinHtmlByCode = array();
+				if (isModEnabled('binlocations')) {
+					dol_include_once('/custom/binlocations/class/bin.class.php');
+				}
+				foreach ($txsBinByBatch as $txsCode) {
+					if ($txsCode === '' || isset($txsBinHtmlByCode[$txsCode])) {
+						continue;
+					}
+					$txsBinHtmlByCode[$txsCode] = dol_escape_htmltag($txsCode);
+					if (class_exists('Bin')) {
+						$txsBinObj = new Bin($db);
+						if ($txsBinObj->fetch(0, $txsCode) > 0) {
+							$txsBinHtmlByCode[$txsCode] = $txsBinObj->getNomUrl(1);
+						}
+					}
+				}
+				foreach ($txsBatchByLine as $txsLid => $txsB) {
+					$txsBinHtmlByLine[$txsLid] = (isset($txsBinByBatch[$txsB]) && isset($txsBinHtmlByCode[$txsBinByBatch[$txsB]]))
+						? $txsBinHtmlByCode[$txsBinByBatch[$txsB]]
+						: '';
+				}
+			}
+		}
+	}
+
 	print '<div class="div-table-responsive-no-min">';
 	print '<table id="tablelines" class="noborder centpercent">';
 	print '<thead>';
@@ -1829,6 +1980,17 @@ if ($action == 'create') {
 		}
 		if (isModEnabled('stock')) {
 			print '<td class="left">'.$langs->trans("WarehouseTarget").'</td>';
+		}
+
+		// TXS CORE OVERRIDE (C3): server-render the BIN Location header so the value can be
+		// resolved by batch (variant-correct) and populated for the grouped view. The
+		// binlocations injector defers to this cell (it checks for .binlocations-reception-bin-title),
+		// so there is no duplicate column. (C1 - the missing header background/border across the
+		// last two columns - is fixed separately in txscorp by hiding the Calculated weight/volume
+		// columns by index so header and body stay aligned.)
+		if ($txsServerBinColumn) {
+			$langs->load('binlocations@binlocations');
+			print '<td class="left binlocations-reception-bin-title">'.$langs->trans("BinCode").'</td>';
 		}
 
 		if (isModEnabled('productbatch')) {
@@ -1908,8 +2070,199 @@ if ($action == 'create') {
 
 	$arrayofpurchaselinealreadyoutput = array();
 
+	// TXS CORE OVERRIDE: the binlocations module injects a "BIN Location" column header (via JS in
+	// its formConfirm hook) immediately after the warehouse column when this setting is on. That JS
+	// only fills cells on core rows (tr[id^="row-"]), not our grouped rows, so we must emit a matching
+	// BIN cell here (and in the AJAX detail rows) to keep the header border and column order aligned.
+	$txsHasBinColumn = (isModEnabled('binlocations') && getDolGlobalInt('BINLOCATIONS_ENABLE_RECEPTION_BIN_COLUMN') && !empty($object->lines));
+
+	// TXS CORE OVERRIDE: column count for the collapsed/detail rows of the grouped view.
+	$txsColCount = 0;
+	if (getDolGlobalString('MAIN_VIEW_LINE_NUMBER')) {
+		$txsColCount++;
+	}
+	$txsColCount += 4; // Product, Comment, QtyOrdered, QtyReceived
+	if ($origin && $origin_id > 0) {
+		$txsColCount++; // QtyInOtherReceptions
+	}
+	if (isModEnabled('stock')) {
+		$txsColCount++; // Warehouse
+	}
+	if ($txsHasBinColumn) {
+		$txsColCount++; // BIN Location (injected by binlocations)
+	}
+	if (isModEnabled('productbatch')) {
+		$txsColCount++; // Batch
+	}
+	$txsColCount += 2; // Weight, Volume
+	if ($object->statut == 0) {
+		$txsColCount += 2; // edit + delete
+	}
+
 	// Loop on each product to send/sent. Warning: $lines must be sorted by ->fk_commandefourndet (it is a regroupment key on output)
 	print '<tbody>';
+	if ($txsUseGroupedReceptionView) {
+		// TXS CORE OVERRIDE: render one collapsed row per product group. Per-barcode detail rows
+		// are fetched on demand by js/reception_card_groups.js via the AJAX endpoint.
+		$txsGroups = array();
+		foreach ($lines as $ln) {
+			$gkey = (int) $ln->fk_commandefourndet;
+			if (!isset($txsGroups[$gkey])) {
+				$txsGroups[$gkey] = array(
+					'fk_commandefourndet' => $gkey,
+					'fk_product' => $ln->fk_product,
+					'product' => (isset($ln->product) && is_object($ln->product)) ? $ln->product : null,
+					'product_label' => (isset($ln->product->label) && $ln->product->label != '') ? $ln->product->label : (isset($ln->label) ? $ln->label : ''),
+					'product_type' => isset($ln->fk_product_type) ? $ln->fk_product_type : (isset($ln->product_type) ? $ln->product_type : 0),
+					'qty_asked' => isset($ln->qty_asked) ? $ln->qty_asked : 0,
+					'qty_received' => 0,
+					'count' => 0,
+					'warehouses' => array(),
+					'single_batch' => '',
+					'single_warehouse' => 0,
+					'single_line_id' => 0,
+				);
+			}
+			$txsGroups[$gkey]['qty_received'] += $ln->qty;
+			$txsGroups[$gkey]['count']++;
+			if (!empty($ln->fk_entrepot)) {
+				$txsGroups[$gkey]['warehouses'][$ln->fk_entrepot] = true;
+			}
+			// Captured for the single-barcode inline render (only meaningful when count == 1).
+			$txsGroups[$gkey]['single_batch'] = isset($ln->batch) ? $ln->batch : '';
+			$txsGroups[$gkey]['single_warehouse'] = !empty($ln->fk_entrepot) ? (int) $ln->fk_entrepot : 0;
+			// Reception line id, used to look up the variant product and BIN (resolved by batch in
+			// the pre-loop) for the inline single-barcode render.
+			$txsGroups[$gkey]['single_line_id'] = !empty($ln->id) ? (int) $ln->id : 0;
+		}
+
+		// Lightweight caches for single-barcode groups (large groups never resolve a single
+		// warehouse/variant here, so these stay tiny).
+		$txsWarehouseObjCache = array();
+		$txsVariantProductCache = array();
+
+		$txsGroupIdx = 0;
+		foreach ($txsGroups as $gkey => $g) {
+			$txsGroupIdx++;
+			$txsExpandable = ((int) $g['count'] > 1);
+			print '<tr class="oddeven txs-recep-group" data-group="'.((int) $gkey).'" data-reception="'.((int) $object->id).'" data-count="'.((int) $g['count']).'" data-expandable="'.($txsExpandable ? '1' : '0').'" data-open="0" data-loaded="0"'.($txsExpandable ? ' style="cursor:pointer;"' : '').'>';
+			if (getDolGlobalString('MAIN_VIEW_LINE_NUMBER')) {
+				print '<td class="center">'.$txsGroupIdx.'</td>';
+			}
+			// Product (+ expand caret only when there is more than one barcode to reveal)
+			print '<td class="linecoldescription">';
+			if ($txsExpandable) {
+				print '<span class="txs-recep-caret" style="cursor:pointer;margin-right:10px;"><i class="fas fa-chevron-right txs-recep-caret-icon"></i></span>';
+			}
+			// Single-barcode rows show the VARIANT (the "Overall Condition" the serial was received
+			// on, resolved by batch in the pre-loop), matching the dispatch "Receipts for this order"
+			// list. Multi-barcode groups can span several variants, so they keep the parent product.
+			$txsGroupProductPrinted = false;
+			if (!$txsExpandable) {
+				$txsGroupLineId = (int) $g['single_line_id'];
+				$txsGroupVarPid = ($txsGroupLineId > 0 && isset($txsVariantPidByLine[$txsGroupLineId])) ? (int) $txsVariantPidByLine[$txsGroupLineId] : 0;
+				if ($txsGroupVarPid > 0) {
+					if (!isset($txsVariantProductCache[$txsGroupVarPid])) {
+						$txsVarProd = new Product($db);
+						$txsVariantProductCache[$txsGroupVarPid] = ($txsVarProd->fetch($txsGroupVarPid) > 0) ? $txsVarProd : null;
+					}
+					if (is_object($txsVariantProductCache[$txsGroupVarPid])) {
+						$txsVarProdObj = $txsVariantProductCache[$txsGroupVarPid];
+						print $txsVarProdObj->getNomUrl(1);
+						print ' - '.dol_escape_htmltag(!empty($txsVarProdObj->label) ? $txsVarProdObj->label : $g['product_label']);
+						$txsGroupProductPrinted = true;
+					}
+				}
+			}
+			if (!$txsGroupProductPrinted) {
+				if (is_object($g['product'])) {
+					print $g['product']->getNomUrl(1);
+					print ' - '.dol_escape_htmltag($g['product_label']);
+				} else {
+					print dol_escape_htmltag($g['product_label']);
+				}
+			}
+			print '</td>';
+			// Comment
+			print '<td></td>';
+			// Qty ordered
+			print '<td class="center">'.$g['qty_asked'].'</td>';
+			// Qty in other receptions
+			if ($origin && $origin_id > 0) {
+				print '<td class="center"></td>';
+			}
+			// Qty received (group total)
+			print '<td class="center">'.$g['qty_received'].'</td>';
+			// Warehouse: single-barcode groups show the actual warehouse; multi-barcode groups show
+			// "multiple" only when more than one distinct warehouse is involved.
+			if (isModEnabled('stock')) {
+				$txsWhText = '';
+				if (!$txsExpandable && !empty($g['single_warehouse'])) {
+					$txsWhId = (int) $g['single_warehouse'];
+					if (!isset($txsWarehouseObjCache[$txsWhId])) {
+						$txsEntrepot = new Entrepot($db);
+						$txsWarehouseObjCache[$txsWhId] = ($txsEntrepot->fetch($txsWhId) > 0) ? $txsEntrepot : null;
+					}
+					// Standard Dolibarr warehouse link (icon + tooltip), same as the expanded rows.
+					$txsWhText = is_object($txsWarehouseObjCache[$txsWhId]) ? $txsWarehouseObjCache[$txsWhId]->getNomUrl(1) : '';
+				} elseif (count($g['warehouses']) > 1) {
+					$txsWhText = $langs->trans("TXSReceptionMultipleWarehouses");
+				}
+				print '<td class="left">'.$txsWhText.'</td>';
+			}
+			// BIN Location: single-barcode groups show the standard BIN link (resolved by batch in
+			// the pre-loop); multi-barcode groups stay blank (per-barcode BINs are shown on expand).
+			// This keeps column alignment with the binlocations-injected header.
+			if ($txsHasBinColumn) {
+				$txsGroupBinHtml = '';
+				if (!$txsExpandable && (int) $g['single_line_id'] > 0 && isset($txsBinHtmlByLine[(int) $g['single_line_id']])) {
+					$txsGroupBinHtml = $txsBinHtmlByLine[(int) $g['single_line_id']];
+				}
+				print '<td class="left binlocations-reception-bin">'.$txsGroupBinHtml.'</td>';
+			}
+			// Batch: single-barcode groups show the barcode as a standard lot link; multi-barcode
+			// groups show the count (the individual barcodes are revealed on expand).
+			if (isModEnabled('productbatch')) {
+				if (!$txsExpandable && $g['single_batch'] !== '') {
+					$txsGroupBatchHtml = img_picto('', 'object_barcode').' '.dol_escape_htmltag($g['single_batch']);
+					$txsGroupLineId = (int) $g['single_line_id'];
+					$txsGroupLotPid = ($txsGroupLineId > 0 && isset($txsVariantPidByLine[$txsGroupLineId])) ? (int) $txsVariantPidByLine[$txsGroupLineId] : (int) $g['fk_product'];
+					if ($txsGroupLotPid > 0) {
+						require_once DOL_DOCUMENT_ROOT.'/product/stock/class/productlot.class.php';
+						$txsGroupLot = new Productlot($db);
+						if ($txsGroupLot->fetch(0, $txsGroupLotPid, $g['single_batch']) > 0) {
+							$txsGroupBatchHtml = $txsGroupLot->getNomUrl(1);
+						}
+					}
+					print '<td class="left linecolbatch nowrap">'.$txsGroupBatchHtml.'</td>';
+				} else {
+					print '<td class="left">'.$langs->trans("TXSReceptionBarcodeCount", $g['count']).'</td>';
+				}
+			}
+			// Weight
+			print '<td class="center">';
+			if (is_object($g['product']) && $g['product_type'] == Product::TYPE_PRODUCT) {
+				print price2num($g['product']->weight * $g['qty_received'], 'MS').' '.measuringUnitString(0, "weight", $g['product']->weight_units);
+			} else {
+				print '&nbsp;';
+			}
+			print '</td>';
+			// Volume
+			print '<td class="center">';
+			if (is_object($g['product']) && $g['product_type'] == Product::TYPE_PRODUCT) {
+				print price2num($g['product']->volume * $g['qty_received'], 'MS').' '.measuringUnitString(0, "volume", $g['product']->volume_units);
+			} else {
+				print '&nbsp;';
+			}
+			print '</td>';
+			// Edit / delete columns (draft only)
+			if ($object->statut == 0) {
+				print '<td class="linecoledit"></td>';
+				print '<td class="linecoldelete" width="10"></td>';
+			}
+			print '</tr>';
+		}
+	} else {
 	for ($i = 0; $i < $num_prod; $i++) {
 		print '<!-- origin line id = '.(!empty($lines[$i]->origin_line_id) ? $lines[$i]->origin_line_id : 0).' -->'; // id of order line
 		print '<tr class="oddeven" id="row-'.$lines[$i]->id.'" data-id="'.$lines[$i]->id.'" data-element="'.$lines[$i]->element.'">';
@@ -1931,9 +2284,30 @@ if ($action == 'create') {
 			}
 
 			print '<td class="linecoldescription">';
-			if (!array_key_exists($lines[$i]->fk_commandefourndet, $arrayofpurchaselinealreadyoutput)) {
-				$text = $lines[$i]->product->getNomUrl(1);
-				$text .= ' - '.$label;
+			// TXS CORE OVERRIDE (C2): the line product is the parent; show the variant the serial was
+			// reclassified to (resolved by batch above). A single PO line can be received across
+			// several variants (e.g. condition _A and _B of the same part), so when this line carries
+			// a distinct variant we print it on EVERY such line instead of once per PO line - otherwise
+			// only the first variant would render and the remaining rows would be blank. Lines without
+			// a distinct variant keep core's once-per-PO-line output.
+			$txsLineVariantPid = isset($txsVariantPidByLine[$lines[$i]->id]) ? (int) $txsVariantPidByLine[$lines[$i]->id] : 0;
+			$txsHasDistinctVariant = ($txsLineVariantPid > 0 && $txsLineVariantPid !== (int) $lines[$i]->fk_product);
+			if ($txsHasDistinctVariant || !array_key_exists($lines[$i]->fk_commandefourndet, $arrayofpurchaselinealreadyoutput)) {
+				$txsVarProd = null;
+				if ($txsHasDistinctVariant) {
+					if (!isset($conf->cache['txs_variant_product'][$txsLineVariantPid])) {
+						$txsCandidateProd = new Product($db);
+						$conf->cache['txs_variant_product'][$txsLineVariantPid] = ($txsCandidateProd->fetch($txsLineVariantPid) > 0) ? $txsCandidateProd : null;
+					}
+					$txsVarProd = $conf->cache['txs_variant_product'][$txsLineVariantPid];
+				}
+				if (is_object($txsVarProd)) {
+					$text = $txsVarProd->getNomUrl(1);
+					$text .= ' - '.(!empty($txsVarProd->label) ? $txsVarProd->label : $label);
+				} else {
+					$text = $lines[$i]->product->getNomUrl(1);
+					$text .= ' - '.$label;
+				}
 				$description = (getDolGlobalInt('PRODUIT_DESC_IN_FORM_ACCORDING_TO_DEVICE') ? '' : dol_htmlentitiesbr($lines[$i]->product->description));
 				print $form->textwithtooltip($text, $description, 3, 0, '', (string) $i);
 				print_date_range(!empty($lines[$i]->date_start) ? $lines[$i]->date_start : 0, !empty($lines[$i]->date_end) ? $lines[$i]->date_end : 0);
@@ -2078,6 +2452,13 @@ if ($action == 'create') {
 				}
 			}
 
+			// TXS CORE OVERRIDE (C3): BIN Location resolved by batch (see pre-loop block). The
+			// binlocations class makes its JS body injector defer to this server-rendered cell.
+			if ($txsServerBinColumn) {
+				$txsLineBin = isset($txsBinHtmlByLine[$lines[$i]->id]) ? $txsBinHtmlByLine[$lines[$i]->id] : '';
+				print '<td class="left binlocations-reception-bin">'.($txsLineBin !== '' ? $txsLineBin : '-').'</td>';
+			}
+
 			// Batch number management
 			if (isModEnabled('productbatch')) {
 				if (isset($lines[$i]->batch)) {
@@ -2087,7 +2468,10 @@ if ($action == 'create') {
 					if ($lines[$i]->product->status_batch > 0 && $lines[$i]->fk_product > 0) {
 						require_once DOL_DOCUMENT_ROOT.'/product/stock/class/productlot.class.php';
 						$productlot = new Productlot($db);
-						$reslot = $productlot->fetch(0, $lines[$i]->fk_product, $lines[$i]->batch);
+						// TXS CORE OVERRIDE (C2): resolve the lot under the variant it was reclassified
+						// to (by batch) so the lot link renders instead of the not-created fallback.
+						$txsLotPid = isset($txsVariantPidByLine[$lines[$i]->id]) ? (int) $txsVariantPidByLine[$lines[$i]->id] : (int) $lines[$i]->fk_product;
+						$reslot = $productlot->fetch(0, $txsLotPid, $lines[$i]->batch);
 						if ($reslot > 0) {
 							$detail = $productlot->getNomUrl(1);
 						} else {
@@ -2175,12 +2559,33 @@ if ($action == 'create') {
 			}
 		}
 	}
+	} // end else (core per-line render) - TXS CORE OVERRIDE
 	print '</tbody>';
 
 	// TODO Show also lines ordered but not delivered
 
 	print "</table>\n";
 	print '</div>';
+
+	// TXS CORE OVERRIDE: load the grouped-view expand/lazy-load assets when the collapsed view is used.
+	if (!empty($txsUseGroupedReceptionView)) {
+		$txsGroupsCfg = array(
+			'url' => dol_buildpath('/custom/txsreception/ajax/get_reception_product_lines.php', 1),
+			'token' => newToken(),
+			'colspan' => (int) $txsColCount,
+			'pageSize' => 100,
+			// Pass the same origin-column decision used for the title and group rows so the lazy
+			// loaded detail rows render the identical column set (header spans full width).
+			'hasOrigin' => ($origin && $origin_id > 0) ? 1 : 0,
+			// Whether the binlocations BIN Location column is present, so detail rows emit a matching cell.
+			'hasBin' => $txsHasBinColumn ? 1 : 0,
+			'loadingText' => $langs->trans("Loading"),
+			'loadMoreText' => $langs->trans("TXSReceptionLoadMoreBarcodes"),
+			'errorText' => $langs->trans("TXSReceptionLoadBarcodesFailed"),
+		);
+		print '<script type="text/javascript">window.txsReceptionCardGroupsConfig = '.json_encode($txsGroupsCfg).';</script>';
+		print '<script type="text/javascript" src="'.dol_escape_htmltag(dol_buildpath('/custom/txsreception/js/reception_card_groups.js', 1).'?v='.urlencode(defined('DOL_VERSION') ? DOL_VERSION : '1.0')).'"></script>';
+	}
 
 
 	print dol_get_fiche_end();

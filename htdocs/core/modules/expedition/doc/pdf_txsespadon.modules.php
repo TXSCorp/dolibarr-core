@@ -156,7 +156,7 @@ class pdf_txsespadon extends ModelePdfExpedition
 		}
 
 		// Load traductions files required by page
-		$outputlangs->loadLangs(array("main", "bills", "orders", "products", "dict", "companies", "other", "propal", "deliveries", "sendings", "productbatch", "compta"));
+		$outputlangs->loadLangs(array("main", "bills", "orders", "products", "dict", "companies", "other", "propal", "deliveries", "sendings", "productbatch", "compta", "txsshipping@txsshipping"));
 
 		// Show Draft Watermark
 		if ($object->statut == $object::STATUS_DRAFT && (getDolGlobalString('SHIPPING_DRAFT_WATERMARK'))) {
@@ -168,7 +168,7 @@ class pdf_txsespadon extends ModelePdfExpedition
 		if (getDolGlobalString('PDF_USE_ALSO_LANGUAGE_CODE') && $outputlangs->defaultlang != getDolGlobalString('PDF_USE_ALSO_LANGUAGE_CODE')) {
 			$outputlangsbis = new Translate('', $conf);
 			$outputlangsbis->setDefaultLang(getDolGlobalString('PDF_USE_ALSO_LANGUAGE_CODE'));
-			$outputlangsbis->loadLangs(array("main", "bills", "orders", "products", "dict", "companies", "other", "propal", "deliveries", "sendings", "productbatch", "compta"));
+			$outputlangsbis->loadLangs(array("main", "bills", "orders", "products", "dict", "companies", "other", "propal", "deliveries", "sendings", "productbatch", "compta", "txsshipping@txsshipping"));
 		}
 
 		$nblines = count($object->lines);
@@ -1322,10 +1322,26 @@ class pdf_txsespadon extends ModelePdfExpedition
 		}
 
 		$outputlangs->load("orders");
+		$outputlangs->load("txsshipping@txsshipping");
 
 		$default_font_size = pdf_getPDFFontSize($outputlangs);
 
 		pdf_pagehead($pdf, $outputlangs, $this->page_hauteur);
+
+		// Linked origin (order) for header: ref / PO date on top; shipment ref / customer code lower
+		$origin = $object->origin;
+		$origin_id = $object->origin_id;
+		$object->fetch_origin();
+		$linkedobject = null;
+		if (!empty($origin) && isModEnabled($origin) && !empty($origin_id)) {
+			$classname = ucfirst($origin);
+			$tmp_linked = new $classname($this->db);
+			'@phan-var-force Commande|Facture $tmp_linked';
+			$result = $tmp_linked->fetch((int) $origin_id);
+			if ($result >= 0) {
+				$linkedobject = $tmp_linked;
+			}
+		}
 
 		//Prepare next
 		$pdf->SetTextColor(0, 0, 60);
@@ -1380,7 +1396,15 @@ class pdf_txsespadon extends ModelePdfExpedition
 
 		$pdf->SetXY($posx, $posy);
 		$pdf->SetTextColor(0, 0, 60);
-		$pdf->MultiCell($w, 4, $outputlangs->transnoentities("RefSending")." : ".$object->ref, '', 'R');
+		if (is_object($linkedobject)) {
+			$text_order_top = $linkedobject->ref;
+			if (isset($linkedobject->ref_client) && !empty($linkedobject->ref_client)) {
+				$text_order_top .= ' ('.$linkedobject->ref_client.')';
+			}
+			$pdf->MultiCell($w, 4, $outputlangs->transnoentities("RefOrder")." : ".$outputlangs->transnoentities($text_order_top), '', 'R');
+		} else {
+			$pdf->MultiCell($w, 4, $outputlangs->transnoentities("RefSending")." : ".$object->ref, '', 'R');
+		}
 
 		// Date planned delivery
 		if (!empty($object->date_delivery)) {
@@ -1411,7 +1435,12 @@ class pdf_txsespadon extends ModelePdfExpedition
 			}
 		}
 
-		if (!getDolGlobalString('MAIN_PDF_HIDE_CUSTOMER_CODE') && !empty($object->thirdparty->code_client)) {
+		if (is_object($linkedobject) && !empty($linkedobject->date)) {
+			$posy += 4;
+			$pdf->SetXY($posx, $posy);
+			$pdf->SetTextColor(0, 0, 60);
+			$pdf->MultiCell($w, 3, $outputlangs->transnoentities("TXSSHIPPING_PDF_PODate")." : ".dol_print_date($linkedobject->date, "day", false, $outputlangs, true), '', 'R');
+		} elseif (!is_object($linkedobject) && !getDolGlobalString('MAIN_PDF_HIDE_CUSTOMER_CODE') && !empty($object->thirdparty->code_client)) {
 			$posy += 4;
 			$pdf->SetXY($posx, $posy);
 			$pdf->SetTextColor(0, 0, 60);
@@ -1428,33 +1457,15 @@ class pdf_txsespadon extends ModelePdfExpedition
 		$pdf->SetFont('', '', $default_font_size + 3);
 		$Yoff = 25;
 
-		// Add list of linked orders
-		$origin = $object->origin;
-		$origin_id = $object->origin_id;
-		$object->fetch_origin();
-
-		// TODO move to external function
-		if (isModEnabled($origin)) {     // commonly $origin='commande'
-			$outputlangs->load('orders');
-
-			$classname = ucfirst($origin);
-			$linkedobject = new $classname($this->db);
-			'@phan-var-force Commande|Facture $linkedobject';
-			$result = $linkedobject->fetch($origin_id);
-			if ($result >= 0) {
-				//$linkedobject->fetchObjectLinked()   Get all linked object to the $linkedobject (commonly order) into $linkedobject->linkedObjects
-
-				$pdf->SetFont('', '', $default_font_size - 2);
-				$text = $linkedobject->ref;
-				if (isset($linkedobject->ref_client) && !empty($linkedobject->ref_client)) {
-					$text .= ' ('.$linkedobject->ref_client.')';
-				}
-				$Yoff += 8;
-				$pdf->SetXY($this->page_largeur - $this->marge_droite - $w, $Yoff);
-				$pdf->MultiCell($w, 2, $outputlangs->transnoentities("RefOrder")." : ".$outputlangs->transnoentities($text), 0, 'R');
+		if (is_object($linkedobject)) {
+			$pdf->SetFont('', '', $default_font_size - 2);
+			$Yoff += 8;
+			$pdf->SetXY($this->page_largeur - $this->marge_droite - $w, $Yoff);
+			$pdf->MultiCell($w, 2, $outputlangs->transnoentities("RefSending")." : ".$outputlangs->transnoentities($object->ref), 0, 'R');
+			if (!getDolGlobalString('MAIN_PDF_HIDE_CUSTOMER_CODE') && !empty($object->thirdparty->code_client)) {
 				$Yoff += 3;
 				$pdf->SetXY($this->page_largeur - $this->marge_droite - $w, $Yoff);
-				$pdf->MultiCell($w, 2, $outputlangs->transnoentities("OrderDate")." : ".dol_print_date($linkedobject->date, "day", false, $outputlangs, true), 0, 'R');
+				$pdf->MultiCell($w, 2, $outputlangs->transnoentities("CustomerCode")." : ".$outputlangs->transnoentities($object->thirdparty->code_client), 0, 'R');
 			}
 		}
 
