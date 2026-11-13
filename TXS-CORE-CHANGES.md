@@ -17,6 +17,7 @@
 ## Table of Contents
 
 - [Change Log Format](#change-log-format)
+- [How a Core Change Reaches Production](#how-a-core-change-reaches-production)
 - [Summary by Version](#summary-by-version)
 - [Detailed Changes](#detailed-changes)
 
@@ -39,6 +40,45 @@ Each change entry **must include**:
 | **Before Code**            | The original upstream Dolibarr code (snippet)           |
 | **After Code**             | The new TXS-modified code (snippet)                     |
 | **Upgrade Notes**          | Special handling required when upgrading Dolibarr       |
+
+---
+
+## How a Core Change Reaches Production
+
+This repository is the **only** source of truth for TXS core changes. Production's
+`/var/www/html/dolibarr` is a git checkout of branch `txs-production`, owned by `www-data`.
+`htdocs/custom/` inside it is a separate checkout of `TXSCorp/dolibarr-custom` (branch
+`production`) and is deployed on its own.
+
+1. Make the change on a branch here, add its `TXS-CORE-nnn` entry to this file, open a PR into
+   `txs-production`.
+2. Merge the PR.
+3. On production, as `www-data` (never root):
+   `sudo -H -u www-data git -C /var/www/html/dolibarr pull`
+4. Rebuilds of the Test CI image (`txs-ci-dolibarr` on txs-dev-ci) pick up `txs-production`
+   automatically within 30 minutes.
+
+Lessons learned (2026-11-09):
+
+- **Never edit core files directly on production.** TXS-CORE-010 to 014 were made on the server
+  between May and August 2026 and only copied into `dolibarr-custom/.corechanges/`, so this
+  repository fell four months behind production. A file that differs from `txs-production` on
+  the server also makes the next `git pull` stop.
+- **Run git on the production checkout as `www-data`.** Root-run git leaves root-owned files in
+  `.git/`, after which `www-data` cannot update the checkout (`.git/index` was root-owned from
+  2026-05-29 to 2026-11-09).
+- **Exclude `htdocs/custom` when checking core:** `git status -- . ':!htdocs/custom'`. Otherwise
+  the two repositories' changes appear mixed together.
+- **`git reset --keep` refuses a file that git lists as modified even when its content already
+  matches** ("not uptodate. Cannot merge"). Confirm with `git diff <target>`, back up, then
+  `git reset --mixed <target>` (moves the pointer and index, writes no files).
+- **TXS-CORE-014 has no customization marker.** It is the single `@set_time_limit(600)` line in
+  `CommonObject::commonGenerateDocument()`; a search for `Begin Customization` after an upgrade
+  will not find it. Re-apply it by hand.
+- **One-off scripts under `htdocs/` are reachable through the web server.** Every such script must
+  start with a CLI-only guard (`if (php_sapi_name() !== 'cli') { exit(1); }`).
+- **`dolibarr-custom/.corechanges/` is an old second copy** of the core files and of this log. It
+  does not contain TXS-CORE-014. Do not update it; use this repository.
 
 ---
 
